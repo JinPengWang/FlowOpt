@@ -94,7 +94,15 @@ optimizer = FlowOpt(
 result = optimizer.optimize(rosenbrock, max_iters=200)
 
 print(f"Optimal Value: {result['best_f']:.6e}")
-print(f"Optimal Solution: {result['best_x'].cpu().numpy()}")
+print(f"Optimal Solution: {result['best_x']}")
+```
+
+### Running Unit Tests
+
+To verify first-principles invariants, step-size unbiasedness, and deterministic reproducibility:
+
+```bash
+python tests/test_flowopt.py
 ```
 
 ---
@@ -104,22 +112,26 @@ print(f"Optimal Solution: {result['best_x'].cpu().numpy()}")
 ```
 FlowOpt/
 ├── flowopt/                   # Core library
-│   ├── optimizer.py           # Pure FlowOpt implementation
+│   ├── optimizer.py           # Pure First-Principles FlowOpt optimizer
 │   ├── benchmarks.py          # Benchmark test functions (Sphere, Rosenbrock, etc.)
 │   ├── baselines.py           # Baselines: CMA-ES, DE, PSO, CBO, CEM
 │   ├── ot.py                  # Entropic Optimal Transport (Sinkhorn-Knopp)
 │   └── vector_field.py        # Vector field closed-form / neural estimators
+├── tests/                     # Unit test suite
+│   └── test_flowopt.py        # First-principles invariant & convergence tests
 ├── experiments/               # Reproducibility scripts
-│   ├── run_full_benchmarks.py # Benchmark runner
+│   ├── run_full_benchmarks.py # Benchmark runner (8 functions x 6 optimizers)
 │   ├── ablation_study.py      # Component ablation
 │   └── neural_vs_closedform.py# Wall-clock efficiency trial
 ├── visualizations/            # Plotting scripts
-│   └── plot_figures.py        # Figure generator
-├── figures/                   # High-res publication figures (PNG)
+│   └── plot_figures.py        # Publication figure generator (PDF + PNG)
+├── figures/                   # Submission figures (Vector PDF + 300 DPI PNG)
 ├── results/                   # JSON logs & convergence traces
-├── paper/                     # LaTeX paper & compiled PDF
-│   ├── manuscript.tex         # Camera-ready IEEE TPAMI LaTeX source
+├── paper/                     # LaTeX paper & supplementary materials
+│   ├── manuscript.tex         # Camera-ready IEEE TPAMI LaTeX source (4 pages)
 │   ├── manuscript.pdf         # Compiled 4-page paper PDF
+│   ├── supplementary.tex      # Full mathematical proofs & function definitions
+│   ├── supplementary.pdf      # Compiled Supplementary Information PDF
 │   └── manuscript.md          # Synchronized Markdown manuscript
 ├── requirements.txt           # Python dependencies
 ├── LICENSE                    # MIT License

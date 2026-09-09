@@ -1,0 +1,201 @@
+\documentclass[10pt,journal,compsoc]{IEEEtran}
+
+\usepackage{amsmath,amssymb,amsfonts,amsthm}
+\usepackage{algorithmic}
+\usepackage{algorithm}
+\usepackage{array}
+\usepackage{url}
+\usepackage{graphicx}
+\usepackage{cite}
+\usepackage{booktabs}
+\usepackage{hyperref}
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}{Lemma}
+\newtheorem{proposition}{Proposition}
+\newtheorem{corollary}{Corollary}
+\newtheorem{definition}{Definition}
+
+\begin{document}
+
+\title{Supplementary Material: Mathematical Proofs, Algorithmic Invariants, and Extended Experimental Details for FlowOpt}
+
+\author{Anonymous Authors}
+
+\maketitle
+
+\appendices
+
+\section{Formal Mathematical Proofs}
+
+\subsection{Proof of Theorem 1: Closed-Form Bayes-Optimal Velocity Field}
+\begin{theorem}
+Let $p_0(x)$ and $p_1(x_1)$ denote probability measures on $\mathbb{R}^d$, and let $x_t = \psi_t(x_0, x_1) = (1 - t)x_0 + t x_1$ denote the linear optimal transport displacement interpolant with conditional velocity $u_t(x_t \mid x_0, x_1) = x_1 - x_0$. The velocity field $v^*(x, t)$ minimizing the continuous Flow Matching objective:
+\begin{equation}
+\mathcal{L}_{\text{FM}}(v) = \mathbb{E}_{t \sim \mathcal{U}[0, 1], (x_0, x_1) \sim \pi} \left[ \| v(x_t, t) - (x_1 - x_0) \|^2 \right]
+\end{equation}
+is uniquely given by the conditional expectation:
+\begin{equation}
+v^*(x, t) = \mathbb{E}_{(x_0, x_1) \sim \pi} \left[ x_1 - x_0 \mid x_t = x \right]
+\end{equation}
+Furthermore, for a discrete empirical ensemble of particle pairs $\{(x_0^{(i)}, \hat{x}_1^{(i)})\}_{i=1}^N$ with local Gaussian kernel density smoothing $p_t(x) \approx \frac{1}{N} \sum_{i=1}^N K_h(x, x_t^{(i)})$, the estimator takes the closed form:
+\begin{equation}
+\hat{v}^*(x, t) = \sum_{i=1}^N \frac{K_h(x, x_t^{(i)})}{\sum_{j=1}^N K_h(x, x_t^{(j)}) + \epsilon} \left( \hat{x}_1^{(i)} - x_0^{(i)} \right)
+\end{equation}
+\end{theorem}
+
+\begin{proof}
+By Fubini's theorem and the law of total expectation, we expand the regression objective for any fixed time $t$:
+\begin{align}
+\mathcal{L}_t(v) &= \int_{\mathbb{R}^d} \int_{\mathbb{R}^{2d}} \|v(x, t) - (x_1 - x_0)\|^2 \nonumber \\
+&\quad \times p(x_0, x_1 \mid x_t = x) p_t(x) \, dx_0 \, dx_1 \, dx
+\end{align}
+Since $p_t(x) \ge 0$, minimizing the total integral with respect to $v(x, t)$ is equivalent to pointwise minimization of the inner expectation:
+\begin{equation}
+v^*(x, t) = \arg\min_{v \in \mathbb{R}^d} \mathbb{E}_{(x_0, x_1) \sim \pi} \left[ \|v - (x_1 - x_0)\|^2 \;\middle|\; x_t = x \right]
+\end{equation}
+Expanding the quadratic norm:
+\begin{equation}
+\|v - (x_1 - x_0)\|^2 = \|v\|^2 - 2 \langle v, x_1 - x_0 \rangle + \|x_1 - x_0\|^2
+\end{equation}
+Taking the gradient with respect to $v$ and setting it to zero:
+\begin{align}
+&\nabla_v \mathbb{E} \left[ \|v - (x_1 - x_0)\|^2 \;\middle|\; x_t = x \right] \nonumber \\
+&= 2 v - 2 \mathbb{E} \left[ x_1 - x_0 \;\middle|\; x_t = x \right] = 0
+\end{align}
+yielding the Bayes-optimal solution:
+\begin{equation}
+v^*(x, t) = \mathbb{E}[x_1 - x_0 \mid x_t = x]
+\end{equation}
+Now, consider an empirical joint sample $\{(x_0^{(i)}, \hat{x}_1^{(i)})\}_{i=1}^N$ with intermediate points $x_t^{(i)} = (1 - t)x_0^{(i)} + t \hat{x}_1^{(i)}$. By non-parametric kernel density estimation with kernel $K_h(\cdot, \cdot)$:
+\begin{equation}
+p(x, u) \approx \frac{1}{N} \sum_{i=1}^N K_h(x, x_t^{(i)}) \delta(u - u^{(i)})
+\end{equation}
+where $u^{(i)} = \hat{x}_1^{(i)} - x_0^{(i)}$. Applying the classic Nadaraya-Watson kernel regression formula:
+\begin{equation}
+\hat{v}^*(x, t) = \frac{\int u \, p(x, u) \, du}{\int p(x, u) \, du} = \frac{\sum_{i=1}^N K_h(x, x_t^{(i)}) u^{(i)}}{\sum_{j=1}^N K_h(x, x_t^{(j)}) + \epsilon}
+\end{equation}
+which concludes the proof.
+\end{proof}
+
+\subsection{Proof of Theorem 2: Kinetic Action Minimization via Optimal Transport}
+\begin{theorem}
+Let $\mathcal{C}(p_0, p_1)$ denote the set of time-dependent probability paths $(p_t, v_t)_{t \in [0, 1]}$ satisfying the continuity equation $\partial_t p_t + \nabla \cdot (p_t v_t) = 0$ with boundary conditions $p_{t=0} = p_0$ and $p_{t=1} = p_1$. The 2-Wasserstein Benamou-Brenier dynamic formulation states:
+\begin{equation}
+W_2^2(p_0, p_1) = \inf_{(p_t, v_t) \in \mathcal{C}(p_0, p_1)} \int_0^1 \int_{\mathbb{R}^d} \|v_t(x)\|^2 p_t(x) \, dx \, dt
+\end{equation}
+The linear displacement interpolant coupled via Monge-Kantorovich transport $\pi^*$ achieves the global minimum of the total kinetic action $\mathcal{S}[v] = \frac{1}{2} \int_0^1 \mathbb{E}_{p_t} [\|v_t\|^2] dt$.
+\end{theorem}
+
+\begin{proof}
+By Jensen's inequality applied to the convex kinetic energy function $\phi(v) = \|v\|^2$:
+\begin{equation}
+\int_0^1 \|v(x_t, t)\|^2 dt \ge \left\| \int_0^1 v(x_t, t) dt \right\|^2 = \|x_1 - x_0\|^2
+\end{equation}
+Equality holds if and only if $v(x_t, t)$ is constant in time along each characteristic trajectory:
+\begin{equation}
+\frac{d x_t}{dt} = x_1 - x_0 \implies x_t = (1 - t)x_0 + t x_1
+\end{equation}
+Integrating over the optimal coupling $\pi^*(x_0, x_1)$:
+\begin{equation}
+\mathcal{S}[v^*] = \frac{1}{2} \int_{\mathbb{R}^d \times \mathbb{R}^d} \|x_1 - x_0\|^2 d\pi^*(x_0, x_1) = \frac{1}{2} W_2^2(p_0, p_1)
+\end{equation}
+Any independent coupling $\pi_{\text{indep}} = p_0 \otimes p_1$ yields $\mathbb{E}_{\pi_{\text{indep}}}[\|x_1 - x_0\|^2] \ge W_2^2(p_0, p_1)$, with path crossings causing non-zero trajectory curvature and turbulent kinetic energy dissipation. Entropic Optimal Transport regularizes $\pi^*$ with entropy parameter $\varepsilon_{\text{OT}}$, ensuring smooth, deterministic, geodesic velocity fields.
+\end{proof}
+
+\subsection{Proof of Theorem 3: Variance Calibration of Step-Size Adaptation}
+\begin{theorem}
+Let $z_1, \dots, z_\mu \overset{\text{i.i.d.}}{\sim} \mathcal{N}(0, I_D)$ and let $w \in \Delta^{\mu-1}$ be positive normalized weights with effective selection mass $\mu_{\text{eff}} = 1 / \sum_{i=1}^\mu w_i^2$. Under the null hypothesis of pure random drift (i.e., objective function $f(x) \equiv \text{const}$), the flow displacement vector:
+\begin{equation}
+z_{\text{flow}} = \sqrt{\mu_{\text{eff}}} \sum_{i=1}^\mu w_i z_i
+\end{equation}
+satisfies:
+\begin{equation}
+z_{\text{flow}} \sim \mathcal{N}(0, I_D)
+\end{equation}
+Consequently, the expected norm of the cumulative flow path $p_\sigma$ in the stationary state is:
+\begin{align}
+\mathbb{E}[\|p_\sigma\|] &= \chi_D \equiv \sqrt{2} \frac{\Gamma((D+1)/2)}{\Gamma(D/2)} \nonumber \\
+&= \sqrt{D} \left(1 - \frac{1}{4D} + \frac{1}{21D^2} + \mathcal{O}(D^{-3})\right)
+\end{align}
+guaranteeing an unbiased step-size adaptation drift:
+\begin{equation}
+\mathbb{E}\left[\ln \frac{\sigma_{t+1}}{\sigma_t} \;\middle|\; \text{null hypothesis}\right] = 0
+\end{equation}
+\end{theorem}
+
+\begin{proof}
+Since each $z_i \sim \mathcal{N}(0, I_D)$ are independent, the linear combination $Y = \sum_{i=1}^\mu w_i z_i$ is a Gaussian random vector with mean $\mathbb{E}[Y] = 0$ and covariance:
+\begin{equation}
+\text{Cov}(Y) = \sum_{i=1}^\mu w_i^2 \text{Cov}(z_i) = \left(\sum_{i=1}^\mu w_i^2\right) I_D = \frac{1}{\mu_{\text{eff}}} I_D
+\end{equation}
+Multiplying by $\sqrt{\mu_{\text{eff}}}$:
+\begin{equation}
+\text{Cov}(z_{\text{flow}}) = \mu_{\text{eff}} \cdot \text{Cov}(Y) = I_D
+\end{equation}
+Thus $z_{\text{flow}} \sim \mathcal{N}(0, I_D)$. The cumulative flow path evolves as:
+\begin{equation}
+p_\sigma^{(t+1)} = (1 - c_\sigma) p_\sigma^{(t)} + \sqrt{c_\sigma(2 - c_\sigma)} z_{\text{flow}}^{(t)}
+\end{equation}
+In the stationary limit $t \to \infty$, the stationary covariance $\Sigma_{p_\sigma}$ satisfies:
+\begin{equation}
+\Sigma_{p_\sigma} = (1 - c_\sigma)^2 \Sigma_{p_\sigma} + c_\sigma(2 - c_\sigma) I_D \implies \Sigma_{p_\sigma} = I_D
+\end{equation}
+Hence $p_\sigma \sim \mathcal{N}(0, I_D)$, whose norm $\|p_\sigma\|$ follows the Chi distribution with $D$ degrees of freedom. The expectation of a Chi-$D$ variable is:
+\begin{equation}
+\mathbb{E}[\|p_\sigma\|] = \sqrt{2} \frac{\Gamma((D+1)/2)}{\Gamma(D/2)} \equiv \chi_D
+\end{equation}
+Applying Stirling's asymptotic expansion of the Gamma ratio:
+\begin{equation}
+\frac{\Gamma(x + 1/2)}{\Gamma(x)} = \sqrt{x} \left(1 - \frac{1}{8x} + \frac{1}{128x^2} + \dots \right)
+\end{equation}
+Setting $x = D/2$:
+\begin{equation}
+\chi_D = \sqrt{2} \sqrt{\frac{D}{2}} \left(1 - \frac{1}{4D} + \frac{1}{21D^2} + \mathcal{O}(D^{-3})\right)
+\end{equation}
+Under the log-step-size update rule:
+\begin{equation}
+\ln \sigma_{t+1} - \ln \sigma_t = \frac{c_\sigma}{d_\sigma} \left( \frac{\|p_\sigma\|}{\chi_D} - 1 \right)
+\end{equation}
+Taking the expectation gives $\mathbb{E}[\|p_\sigma\| / \chi_D - 1] = 1 - 1 = 0$, proving that step-size drift is exactly zero under the null hypothesis. Without the $\sqrt{\mu_{\text{eff}}}$ prefactor, $\text{Cov}(Y) = \frac{1}{\mu_{\text{eff}}} I_D$, which forces $\mathbb{E}[\|p_\sigma\|] = \chi_D / \sqrt{\mu_{\text{eff}}} \approx 0.515 \chi_D$. This would result in a permanent negative drift $\frac{c_\sigma}{d_\sigma}(0.515 - 1) \approx -0.07$, decaying $\sigma_t$ by $7\%$ each generation regardless of performance.
+\end{proof}
+
+\section{Benchmark Function Definitions}
+
+Table \ref{tab:func_defs} enumerates the mathematical formulations, standard domain bounds, and global optima for all eight evaluated benchmark problems in $D=10$ dimensions.
+
+\begin{table*}[t]
+\centering
+\caption{Mathematical Definitions of Benchmark Objective Functions ($D=10$).}
+\label{tab:func_defs}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llll}
+\toprule
+Name & Formulation & Domain $\Omega$ & $f(x^*)$ \\
+\midrule
+Sphere & $f(x) = \sum_{i=1}^D x_i^2$ & $[-5.12, 5.12]^D$ & $0.0$ at $x^* = \mathbf{0}$ \\
+Rosenbrock & $f(x) = \sum_{i=1}^{D-1} [100(x_{i+1} - x_i^2)^2 + (1 - x_i)^2]$ & $[-5.0, 10.0]^D$ & $0.0$ at $x^* = \mathbf{1}$ \\
+Rastrigin & $f(x) = 10D + \sum_{i=1}^D [x_i^2 - 10\cos(2\pi x_i)]$ & $[-5.12, 5.12]^D$ & $0.0$ at $x^* = \mathbf{0}$ \\
+Ackley & $f(x) = -20\exp\left(-0.2\sqrt{\frac{1}{D}\sum x_i^2}\right) - \exp\left(\frac{1}{D}\sum \cos(2\pi x_i)\right) + 20 + e$ & $[-32.768, 32.768]^D$ & $0.0$ at $x^* = \mathbf{0}$ \\
+Griewank & $f(x) = 1 + \frac{1}{4000}\sum_{i=1}^D x_i^2 - \prod_{i=1}^D \cos(x_i / \sqrt{i})$ & $[-600.0, 600.0]^D$ & $0.0$ at $x^* = \mathbf{0}$ \\
+Schwefel & $f(x) = 418.9829 D - \sum_{i=1}^D x_i \sin(\sqrt{|x_i|})$ & $[-500.0, 500.0]^D$ & $0.0$ at $x^* = 420.9687 \cdot \mathbf{1}$ \\
+Levy & $f(x) = \sin^2(\pi w_1) + \sum_{i=1}^{D-1} (w_i - 1)^2 [1 + 10\sin^2(\pi w_i + 1)] + (w_D - 1)^2 [1 + \sin^2(2\pi w_D)]$ & $[-10.0, 10.0]^D$ & $0.0$ at $x^* = \mathbf{1}$ \\
+Lennard-Jones & $V(r) = 4\epsilon \sum_{i < j} \left[ (\sigma / r_{ij})^{12} - (\sigma / r_{ij})^6 \right]$, $N_{\text{atom}}=3$, $D=9$ coords & $[-2.0, 2.0]^D$ & $-3.0$ (equilateral triangle) \\
+\bottomrule
+\end{tabular}%
+}
+\end{table*}
+
+\section{Baseline Algorithms Implementation and Hyperparameters}
+
+All baseline algorithms were executed under identical conditions: standard popsize $N = 30$, budget $T = 200$ iterations, and 5 random seeds ($42, 43, 44, 45, 46$).
+
+\begin{enumerate}
+\item \textbf{CMA-ES (Covariance Matrix Adaptation Evolution Strategy)}: Canonical Hansen (2001) implementation with cumulative path length adaptation, rank-1 and rank-$\mu$ covariance updates.
+\item \textbf{DE (Differential Evolution)}: Standard \texttt{DE/rand/1/bin} strategy with mutation scaling factor $F = 0.8$ and binomial crossover probability $CR = 0.9$.
+\item \textbf{PSO (Particle Swarm Optimization)}: Standard velocity clamping with inertia weight $w = 0.729$, cognitive acceleration $c_1 = 1.494$, and social acceleration $c_2 = 1.494$.
+\item \textbf{CBO (Consensus-Based Optimization)}: Analytical CBO formulation (Carrillo et al., 2018) with drift rate $\lambda = 1.0$, isotropic diffusion coefficient $\sigma_B = 0.4$, and Gibbs consensus weight temperature $\alpha = 50.0$.
+\item \textbf{CEM (Cross-Entropy Method)}: Elite selection ratio $\rho = 0.2$, smoothing factor $\alpha = 0.7$ for Gaussian mean and variance updates.
+\end{enumerate}
+
+\end{document}

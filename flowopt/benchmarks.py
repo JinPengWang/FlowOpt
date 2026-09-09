@@ -135,6 +135,26 @@ class LennardJonesCluster(BenchmarkFunction):
         return energy
 
 
+def get_benchmark(name, dim=30):
+    name_lower = name.lower()
+    mapping = {
+        "sphere": Sphere,
+        "rosenbrock": Rosenbrock,
+        "rastrigin": Rastrigin,
+        "ackley": Ackley,
+        "griewank": Griewank,
+        "schwefel": Schwefel,
+        "levy": Levy,
+    }
+    if name_lower in mapping:
+        return mapping[name_lower](dim=dim)
+    elif "lennard" in name_lower:
+        n_atoms = dim // 3 if dim >= 6 else 3
+        return LennardJonesCluster(n_atoms=n_atoms)
+    else:
+        raise ValueError(f"Unknown benchmark: {name}")
+
+
 def get_all_benchmarks(dim=30):
     return [
         Sphere(dim=dim),

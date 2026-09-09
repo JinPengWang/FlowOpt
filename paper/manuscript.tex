@@ -40,7 +40,7 @@
 
 \IEEEtitleabstractindextext{%
 \begin{abstract}
-Flow Matching has emerged as a groundbreaking continuous-time generative modeling paradigm, outperforming traditional diffusion models in sampling speed and trajectory straightness by directly regressing vector fields along continuous probability paths. However, extending Flow Matching to black-box numerical optimization has remained an open challenge due to a severe computational dilemma: conventional Flow Matching parameterizes velocity fields via deep neural networks trained through thousands of backpropagation steps, introducing prohibitive computational latency and sample inefficiency. In this paper, we propose \textbf{FlowOpt} (Optimal Transport Flow Matching Optimizer), a mathematically pure, non-stacked optimization framework that formulates global continuous optimization as transporting a continuous Gaussian probability measure $p_t = \mathcal{N}(m_t, \sigma_t^2 C_t)$ toward an annealed Gibbs-Boltzmann target distribution along minimal-action geodesics. We resolve the velocity field bottleneck by proving that the Bayes-optimal Flow Matching vector field admits an exact closed-form estimator, pairing empirical samples with target proposals via Entropic Optimal Transport (Sinkhorn-Knopp algorithm). Furthermore, we diagnose the mathematical root cause of early swarm stagnation in discrete particle formulations—identifying that discrete particle pinning and an uncalibrated step-size variance decay forced swarms into premature freeze—and introduce rigorously calibrated Flow-Path Cumulative Step-Size Adaptation (FP-CSA) with exact $\sqrt{\mu_{\text{eff}}}$ scaling. Extensive empirical evaluations across eight standard and real-world benchmarks over a standardized 200-iteration budget demonstrate that FlowOpt decisively outperforms state-of-the-art derivative-free methods: achieving exact zero convergence ($0.0000 \pm 0.0000$) on Sphere (surpassing CMA-ES with $p = 0.0075$), superior multi-modal navigation on Rastrigin ($4.78 \pm 1.59$, lowest error among all six methods), exact global convergence on Griewank ($0.0000 \pm 0.0000$), machine-floor resolution on Ackley ($4.77 \times 10^{-6}$) and Levy ($7.64 \times 10^{-15}$), and 100\% ground-state discovery on Lennard-Jones clusters ($-3.000$).
+Flow Matching has emerged as a groundbreaking continuous-time generative modeling paradigm, outperforming traditional diffusion models in sampling speed and trajectory straightness by directly regressing vector fields along continuous probability paths. However, extending Flow Matching to black-box numerical optimization has remained an open challenge due to a severe computational dilemma: conventional Flow Matching parameterizes velocity fields via deep neural networks trained through thousands of backpropagation steps, introducing prohibitive computational latency and sample inefficiency. In this paper, we propose \textbf{FlowOpt} (Optimal Transport Flow Matching Optimizer), a mathematically pure, non-stacked optimization framework that formulates global continuous optimization as transporting a continuous Gaussian probability measure $p_t = \mathcal{N}(m_t, \sigma_t^2 C_t)$ toward an annealed Gibbs-Boltzmann target distribution along minimal-action geodesics. We resolve the velocity field bottleneck by proving that the Bayes-optimal Flow Matching vector field admits an exact closed-form estimator, pairing empirical samples with target proposals via Entropic Optimal Transport (Sinkhorn-Knopp algorithm). Furthermore, we diagnose the mathematical root cause of early swarm stagnation in discrete particle formulations—identifying that discrete particle pinning and an uncalibrated step-size variance decay forced swarms into premature freeze—and introduce rigorously calibrated Flow-Path Cumulative Step-Size Adaptation (FP-CSA) with exact $\sqrt{\mu_{\text{eff}}}$ scaling. Extensive empirical evaluations across eight standard and real-world benchmarks over a standardized 200-iteration budget demonstrate that FlowOpt decisively outperforms state-of-the-art derivative-free methods: achieving exact zero convergence ($0.0000 \pm 0.0000$) on Sphere (surpassing CMA-ES with $p = 0.0075$), rapid valley navigation on Rosenbrock ($0.215 \pm 0.217$, beating DE, PSO, CBO, and CEM with $p < 0.01$), superior multi-modal navigation on Rastrigin ($4.78 \pm 1.71$, lowest error among all six methods), exact global convergence on Griewank ($0.0000 \pm 0.0000$), machine-floor resolution on Ackley ($4.77 \times 10^{-6}$) and Levy ($7.64 \times 10^{-15}$), and 100\% ground-state discovery on Lennard-Jones clusters ($-3.000$).
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -196,28 +196,28 @@ Lennard-Jones & $\mathbf{-3.000 \pm 0.000}$ & $\mathbf{-3.000 \pm 0.000}$ & $-2.
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=0.68\linewidth]{../figures/fig1_flow_trajectories.png}
+\includegraphics[width=0.68\linewidth]{../figures/fig1_flow_trajectories.pdf}
 \caption{FlowOpt Probability Flow Trajectories on the Rosenbrock Non-Convex Valley. Particles follow smooth, collision-free geodesics directly to the global minimum (1, 1).}
 \label{fig:trajectories}
 \end{figure}
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=0.68\linewidth]{../figures/fig2_convergence_curves.png}
+\includegraphics[width=0.68\linewidth]{../figures/fig2_convergence_curves.pdf}
 \caption{Convergence Dynamics across Sphere, Rosenbrock, Ackley, and Levy functions.}
 \label{fig:convergence}
 \end{figure}
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=0.60\linewidth]{../figures/fig3_ablation_comparison.png}
+\includegraphics[width=0.60\linewidth]{../figures/fig3_ablation_comparison.pdf}
 \caption{Ablation Study: Dissecting the impact of Optimal Transport, Kinetic Momentum, and Stein Repulsive Dispersion.}
 \label{fig:ablation}
 \end{figure}
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=0.60\linewidth]{../figures/fig4_neural_vs_closedform.png}
+\includegraphics[width=0.60\linewidth]{../figures/fig4_neural_vs_closedform.pdf}
 \caption{Computational Efficiency: Closed-Form OT-FM achieves up to a $2.5\times$ wall-clock speedup over Online Neural MLP training.}
 \label{fig:speedup}
 \end{figure}
