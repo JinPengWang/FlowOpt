@@ -26,7 +26,7 @@ from flowopt.benchmarks import (
     LennardJonesCluster
 )
 
-def run_benchmarks(dim=30, max_evals=10000, n_runs=5, output_dir="results"):
+def run_benchmarks(dim=10, max_iters=200, n_runs=5, output_dir="results"):
     os.makedirs(output_dir, exist_ok=True)
     
     benchmarks = [
@@ -41,18 +41,18 @@ def run_benchmarks(dim=30, max_evals=10000, n_runs=5, output_dir="results"):
     ]
     
     optimizers = {
-        "FlowOpt (Ours)": lambda d, b, s: FlowOpt(dim=d, bounds=b, seed=s),
-        "CMA-ES": lambda d, b, s: CMAESOptimizer(dim=d, bounds=b, seed=s),
-        "DE": lambda d, b, s: DifferentialEvolutionOptimizer(dim=d, bounds=b, seed=s),
-        "PSO": lambda d, b, s: PSOOptimizer(dim=d, bounds=b, seed=s),
-        "CBO": lambda d, b, s: CBOOptimizer(dim=d, bounds=b, seed=s),
-        "CEM": lambda d, b, s: CEMOptimizer(dim=d, bounds=b, seed=s)
+        "FlowOpt (Ours)": lambda d, b, s: FlowOpt(dim=d, bounds=b, pop_size=30, seed=s),
+        "CMA-ES": lambda d, b, s: CMAESOptimizer(dim=d, bounds=b, pop_size=30, seed=s),
+        "DE": lambda d, b, s: DifferentialEvolutionOptimizer(dim=d, bounds=b, pop_size=30, seed=s),
+        "PSO": lambda d, b, s: PSOOptimizer(dim=d, bounds=b, pop_size=30, seed=s),
+        "CBO": lambda d, b, s: CBOOptimizer(dim=d, bounds=b, pop_size=30, seed=s),
+        "CEM": lambda d, b, s: CEMOptimizer(dim=d, bounds=b, pop_size=30, seed=s)
     }
     
     summary = {}
     
     print("=" * 85)
-    print(f"STARTING COMPREHENSIVE BENCHMARK EVALUATION (Dim={dim}, Evals={max_evals}, Runs={n_runs})")
+    print(f"STARTING COMPREHENSIVE BENCHMARK EVALUATION (Dim={dim}, Iterations={max_iters}, Runs={n_runs})")
     print("=" * 85)
     
     for fn in benchmarks:
@@ -70,7 +70,7 @@ def run_benchmarks(dim=30, max_evals=10000, n_runs=5, output_dir="results"):
                 t0 = time.time()
                 try:
                     opt = opt_factory(fn.dim, fn.bounds, seed)
-                    res = opt.optimize(fn, max_evals=max_evals)
+                    res = opt.optimize(fn, max_iters=max_iters)
                     elapsed = time.time() - t0
                     fitness_list.append(res["best_f"])
                     runtime_list.append(elapsed)
@@ -123,5 +123,5 @@ def run_benchmarks(dim=30, max_evals=10000, n_runs=5, output_dir="results"):
     return summary
 
 if __name__ == "__main__":
-    # Test on D=10 and D=30
-    run_benchmarks(dim=10, max_evals=6000, n_runs=5, output_dir="results")
+    # Test on D=10, 200 iterations
+    run_benchmarks(dim=10, max_iters=200, n_runs=5, output_dir="results")

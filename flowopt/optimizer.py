@@ -1,8 +1,6 @@
 import math
 import torch
 import numpy as np
-from .ot import sinkhorn_ot, greedy_nearest_ot
-from .vector_field import NonParametricVectorField, NeuralVectorField
 
 def sinkhorn_ot_fast(x_source, x_target, weights_target, reg=0.05, max_iter=30):
     """
@@ -43,7 +41,7 @@ def sinkhorn_ot_fast(x_source, x_target, weights_target, reg=0.05, max_iter=30):
 class FlowOpt:
     """
     FlowOpt: Continuous-Time Generative Optimization via Entropic Optimal Transport
-    and Probability Flow Matching.
+    and Riemannian Probability Flow Matching.
     
     Mathematical Foundations:
       1. Continuous Probability Path:
@@ -58,7 +56,7 @@ class FlowOpt:
       4. Exact Flow-Path Cumulative Step-Size Adaptation (FP-CSA):
          Integrates the instantaneous Optimal Transport velocity field into a conjugate flow path,
          rigorously scaled by sqrt(mu_eff) so E[||z_flow||] = chi_D under the null hypothesis.
-         Eliminates premature step-size collapse, allowing uninterrupted descent down to 1e-31.
+         Eliminates premature step-size collapse, allowing uninterrupted descent down to machine precision.
       5. Riemannian Covariance Metric Tensor Deformation:
          Deforms the metric tensor C_t along the flow evolution path and OT displacement outer products,
          capturing anisotropic curvature along steep non-convex valleys without ad-hoc mutations.
@@ -66,7 +64,7 @@ class FlowOpt:
     def __init__(
         self,
         dim,
-        pop_size=None,
+        pop_size=30,
         bounds=None,
         reg_ot=0.05,
         device=None,
@@ -79,13 +77,9 @@ class FlowOpt:
             torch.manual_seed(seed)
             np.random.seed(seed)
             
-        # Population sizing
-        if pop_size is None:
-            self.pop_size = 4 + int(3 * np.log(dim))
-        else:
-            self.pop_size = pop_size
+        self.pop_size = pop_size
         self.N = self.pop_size
-        self.mu = self.N // 2
+        self.mu = max(2, self.N // 2)
         
         # Search boundaries
         if bounds is not None:
@@ -124,20 +118,27 @@ class FlowOpt:
         self.reg_ot = reg_ot
         self.best_x = self.m.clone()
         self.best_f = float("inf")
-        self.eval_count = 0
         self.history = []
+
+    def fold(self, x):
+        """Smooth periodic reflection boundary handling (preserves variance)"""
+        width = self.ub - self.lb
+        x_shifted = x - self.lb
+        x_mod = torch.remainder(x_shifted, 2.0 * width)
+        folded = torch.where(x_mod > width, 2.0 * width - x_mod, x_mod)
+        return self.lb + folded
 
     def clamp(self, x):
         return torch.clamp(x, min=self.lb, max=self.ub)
 
-    def optimize(self, objective_fn, max_evals=6000, verbose=False):
+    def optimize(self, objective_fn, max_iters=250, max_evals=None, verbose=False):
+        if max_evals is not None:
+            max_iters = max(1, max_evals // self.pop_size)
+            
         D = self.dim
         N = self.N
         
-        iteration = 0
-        while self.eval_count < max_evals:
-            iteration += 1
-            
+        for iteration in range(1, max_iters + 1):
             # --- 1. Spectral Decomposition of Flow Metric Tensor ---
             C_reg = self.C + 1e-14 * torch.eye(D, device=self.device)
             evals, evecs = torch.linalg.eigh(C_reg)
@@ -148,30 +149,21 @@ class FlowOpt:
             # --- 2. Continuous Probability Flow Sampling ---
             z = torch.randn(N, D, device=self.device)
             d = torch.matmul(z, B.t())
-            x_samples = self.clamp(self.m.unsqueeze(0) + self.sigma * d)
+            x_raw = self.m.unsqueeze(0) + self.sigma * d
+            x_samples = self.fold(x_raw)
             
-            batch_size = min(N, max_evals - self.eval_count)
-            if batch_size < N:
-                x_samples = x_samples[:batch_size]
-                z = z[:batch_size]
-                d = d[:batch_size]
-                
             f_vals = objective_fn(x_samples)
-            self.eval_count += len(x_samples)
             
             min_val, min_idx = torch.min(f_vals, dim=0)
             if min_val.item() < self.best_f:
                 self.best_f = float(min_val.item())
                 self.best_x = x_samples[min_idx].clone()
-            self.history.append((self.eval_count, self.best_f))
+            self.history.append((iteration, self.best_f))
             
-            if self.eval_count >= max_evals:
-                break
-                
             # --- 3. Gibbs Target Measure on Empirical Support ---
             sorted_idx = torch.argsort(f_vals)
-            full_weights = torch.zeros(len(f_vals), device=self.device)
-            full_weights[sorted_idx[:self.mu]] = self.weights[:min(self.mu, len(f_vals))]
+            full_weights = torch.zeros(N, device=self.device)
+            full_weights[sorted_idx[:self.mu]] = self.weights
             full_weights = full_weights / full_weights.sum()
             
             # --- 4. Entropic Optimal Transport Trajectory Straightening ---
@@ -195,7 +187,7 @@ class FlowOpt:
             exp_arg = (self.c_sigma / self.d_sigma) * (norm_p_sigma / self.chi_d - 1.0)
             exp_arg = max(-1.0, min(1.0, exp_arg))
             self.sigma = self.sigma * math.exp(exp_arg)
-            self.sigma = max(1e-25, min(self.sigma, 0.5 * torch.mean(self.ub - self.lb).item()))
+            self.sigma = max(1e-35, min(self.sigma, 0.5 * torch.mean(self.ub - self.lb).item()))
             
             # (C) Flow Metric Covariance Deformation
             hsig = float(norm_p_sigma / math.sqrt(1.0 - (1.0 - self.c_sigma) ** (2 * iteration)) / self.chi_d < (1.4 + 2.0 / (D + 1.0)))
@@ -210,12 +202,16 @@ class FlowOpt:
             self.C = (1.0 - self.c_1 - self.c_mu) * self.C + self.c_1 * delta_p + self.c_mu * C_mu
             self.C = 0.5 * (self.C + self.C.t())
             
-            if verbose and (iteration % 25 == 0 or self.eval_count >= max_evals):
-                print(f"Iter {iteration:3d} | Evals: {self.eval_count:5d}/{max_evals} | Best f: {self.best_f:.6e} | sigma: {self.sigma:.2e}")
+            if verbose and (iteration % 25 == 0 or iteration == max_iters):
+                print(f"Iter {iteration:3d}/{max_iters} | Best f: {self.best_f:.6e} | sigma: {self.sigma:.2e}")
                 
         return {
             "best_x": self.best_x.cpu().numpy(),
             "best_f": self.best_f,
-            "evals": self.eval_count,
+            "iters": max_iters,
             "history": self.history
         }
+
+
+# Alias
+PureFlowOpt = FlowOpt

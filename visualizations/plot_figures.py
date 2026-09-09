@@ -192,7 +192,7 @@ def plot_convergence_curves():
                 
         ax.set_yscale('log')
         ax.set_title(f"{fn_name} Function (D=10)", fontweight='bold')
-        ax.set_xlabel("Function Evaluations (FEvals)")
+        ax.set_xlabel("Iterations (t)")
         ax.set_ylabel(r"Objective $f(x)$ (Log Scale)")
         if idx == 0:
             ax.legend(framealpha=0.9, loc='upper right')
