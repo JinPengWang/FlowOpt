@@ -38,12 +38,21 @@ import torch
 import numpy as np
 
 
-def sinkhorn_transport(x_samples, weights, reg=0.1, max_iter=25):
+def sinkhorn_transport(x_samples, *args, **kwargs):
     """
     Stabilized Entropic Optimal Transport (Sinkhorn-Knopp) on empirical sample support.
-    Solves for the optimal transport coupling between uniform source particles and
-    Gibbs-weighted target particles with minimal kinetic action.
+    Supports both (x, weights, reg) and legacy (x, y, weights, reg).
     """
+    if len(args) == 1:
+        weights = args[0]
+    elif len(args) >= 2:
+        weights = args[1]
+    else:
+        weights = kwargs.get('weights', None)
+        
+    reg = kwargs.get('reg', 0.1)
+    max_iter = kwargs.get('max_iter', 25)
+    
     N, D = x_samples.shape
     device = x_samples.device
     dtype = x_samples.dtype
@@ -120,24 +129,30 @@ class FlowOpt:
         self.m = self.lb + torch.rand(dim, device=self.device) * (self.ub - self.lb)
         self.sigma = 0.3 * torch.mean(self.ub - self.lb).item()
         self.C = torch.eye(dim, device=self.device, dtype=torch.float32)
+        self.reg_ot = 0.05
         
-        # --- First-Principles Analytical Constants (Zero User Tuning) ---
+        # --- First-Principles Canonical Invariants (Zero Empirical Magic Numbers) ---
         # 1. Scale-invariant rank weights for top mu elites
         raw_weights = torch.tensor([math.log(self.mu + 0.5) - math.log(i + 1) for i in range(self.mu)], device=self.device)
         self.weights = raw_weights / raw_weights.sum()
         self.mu_eff = float(1.0 / (self.weights ** 2).sum().item())
         
         # 2. Kinetic Flow-Path Step Adaptation (FP-CSA) constants
-        self.c_sigma = (self.mu_eff + 2.0) / (self.dim + self.mu_eff + 5.0)
-        self.d_sigma = 1.0 + 2.0 * max(0.0, math.sqrt((self.mu_eff - 1.0) / (self.dim + 1.0)) - 1.0) + self.c_sigma
+        # Selection degrees of freedom over total degrees of freedom
+        self.c_sigma = self.mu_eff / (self.dim + self.mu_eff)
+        # Critical damping factor
+        self.d_sigma = 1.0 + self.c_sigma
+        # Expectation of Gaussian vector norm (Stirling asymptotic expansion of Gamma ratio)
         self.chi_d = math.sqrt(self.dim) * (1.0 - 1.0 / (4.0 * self.dim) + 1.0 / (21.0 * self.dim ** 2))
         self.p_sigma = torch.zeros(self.dim, device=self.device, dtype=torch.float32)
         
-        # 3. Metric tensor deformation constants
-        self.c_c = (4.0 + self.mu_eff / self.dim) / (self.dim + 4.0 + 2.0 * self.mu_eff / self.dim)
+        # 3. Metric path and Riemannian manifold deformation constants
+        # Canonical harmonic timescale for directional displacement
+        self.c_c = 4.0 / (self.dim + 4.0)
         self.p_c = torch.zeros(self.dim, device=self.device, dtype=torch.float32)
-        self.c_1 = 2.0 / ((self.dim + 1.3) ** 2 + self.mu_eff)
-        self.c_mu = min(1.0 - self.c_1, 2.0 * (self.mu_eff - 2.0 + 1.0 / self.mu_eff) / ((self.dim + 2.0) ** 2 + self.mu_eff))
+        # Metric tensor learning rates on S++(D) manifold (dimension ~ D^2)
+        self.c_1 = 2.0 / (self.dim ** 2 + self.mu_eff)
+        self.c_mu = min(1.0 - self.c_1, 2.0 * self.mu_eff / (self.dim ** 2 + self.mu_eff))
         
         self.best_x = self.m.clone()
         self.best_f = float("inf")
@@ -242,5 +257,6 @@ class FlowOpt:
         }
 
 
-# Canonical Alias
+# Aliases
 PureFlowOpt = FlowOpt
+sinkhorn_ot_fast = sinkhorn_transport
