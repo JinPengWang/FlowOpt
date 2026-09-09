@@ -133,17 +133,18 @@ Early heuristic swarms frequently exhibited a severe stagnation phenomenon: rapi
 FlowOpt completely resolves both bottlenecks: (i) sampling continuously from $p_t(x)$ eliminates particle pinning, and (ii) scaling the conjugate flow path by $\sqrt{\mu_{\text{eff}}}$ guarantees exact variance calibration $\mathbb{E}[\|p_\sigma\|] = \chi_D$ under random drift. This allows $\sigma$ to expand during exploratory phases and contract smoothly down to machine precision ($10^{-31}$) in quadratic basins.
 
 \begin{algorithm}[t]
-\caption{Pure FlowOpt: Optimal Transport Flow Matching Optimizer}
+\caption{FlowOpt: Entropic Optimal Transport Flow Matching Optimizer}
 \begin{algorithmic}[1]
 \REQUIRE Objective $f(x)$, bounds $[lb, ub]$, dimension $D$, budget $T_{\max}$ iterations, population size $N$.
 \STATE Initialize $m_0 \sim U[lb, ub]$, $\sigma_0 = 0.3 \cdot \text{span}$, $C_0 = I_D$, $p_\sigma = 0$, $p_c = 0$.
 \WHILE{$t < T_{\max}$}
-    \STATE Sample $N$ particles $x^{(i)} \sim \mathcal{N}(m_t, \sigma_t^2 C_t)$ and evaluate $f(x^{(i)})$.
+    \STATE Anneal OT entropic noise schedule: $\varepsilon_t = \varepsilon_0 (1 - t/T_{\max}) + \varepsilon_{\min}$.
+    \STATE Sample $N$ particles $x^{(i)} \sim \mathcal{N}(m_t, \sigma_t^2 C_t)$ and evaluate $f(\text{fold}(x^{(i)}))$.
     \STATE Update best record $x^*, f^* \leftarrow \min_{i} f(x^{(i)})$.
-    \STATE Compute Gibbs-Boltzmann weights $w$ over top $\mu$ elites.
-    \STATE Solve Entropic Optimal Transport $\Pi^* = \text{Sinkhorn}(X, X, w, \varepsilon_{\text{OT}})$.
+    \STATE Compute Gibbs-Boltzmann log-rank weights $w$ over top $\mu$ elites.
+    \STATE Solve Entropic Optimal Transport $\Pi^* = \text{Sinkhorn}(X, X, w, \varepsilon_t)$.
     \STATE Compute OT velocities $u^{(i)} = \sum_j \Pi_{ij}^* x^{(j)} - x^{(i)}$.
-    \STATE Update mean: $m_{t+1} \leftarrow m_t + \frac{1}{N}\sum_{i=1}^N u^{(i)}$.
+    \STATE Update mean: $m_{t+1} \leftarrow \text{clamp}\left(m_t + \frac{1}{N}\sum_{i=1}^N u^{(i)}\right)$.
     \STATE Calibrated FP-CSA: $z_{\text{flow}} = \sqrt{\mu_{\text{eff}}} C_t^{-1/2} \frac{m_{t+1} - m_t}{\sigma_t}$.
     \STATE $p_\sigma \leftarrow (1 - c_\sigma) p_\sigma + \sqrt{c_\sigma (2 - c_\sigma)} z_{\text{flow}}$.
     \STATE Adapt step size: $\sigma_{t+1} \leftarrow \sigma_t \exp\left(\frac{c_\sigma}{d_\sigma}\left(\frac{\|p_\sigma\|}{\chi_D} - 1\right)\right)$.
@@ -170,11 +171,11 @@ The computational footprint per iteration consists of: (i) Entropic OT requiring
 Benchmark & FlowOpt (Ours) & CMA-ES & DE & PSO & CBO & CEM \\
 \midrule
 Sphere & $\mathbf{0.0000 \pm 0.0000}$ & $1.95 \times 10^{-14} \pm 1.40 \times 10^{-14}$ ** & $0.032 \pm 0.018$ ** & $1.04 \times 10^{-9} \pm 1.47 \times 10^{-9}$ ** & $0.385 \pm 0.103$ ** & $0.819 \pm 0.697$ ** \\
-Rosenbrock & $0.438 \pm 0.344$ & $\mathbf{0.098 \pm 0.082}$ & $8.613 \pm 1.019$ ** & $5.363 \pm 0.196$ ** & $17.009 \pm 3.832$ ** & $47.320 \pm 56.382$ ** \\
-Rastrigin & $\mathbf{4.776 \pm 1.592}$ & $5.572 \pm 1.015$ & $44.434 \pm 8.982$ ** & $5.974 \pm 2.084$ & $38.233 \pm 16.312$ * & $15.159 \pm 1.755$ * \\
+Rosenbrock & $0.908 \pm 0.951$ & $\mathbf{0.098 \pm 0.082}$ * & $8.613 \pm 1.019$ ** & $5.363 \pm 0.196$ ** & $17.009 \pm 3.832$ ** & $47.320 \pm 56.382$ ** \\
+Rastrigin & $\mathbf{4.776 \pm 1.712}$ & $5.572 \pm 1.015$ & $44.434 \pm 8.982$ ** & $5.974 \pm 2.084$ & $38.233 \pm 16.312$ ** & $15.159 \pm 1.755$ ** \\
 Ackley & $\mathbf{4.77 \times 10^{-6} \pm 0.00}$ & $\mathbf{4.77 \times 10^{-6} \pm 0.00}$ & $3.163 \pm 0.220$ ** & $2.17 \times 10^{-4} \pm 8.61 \times 10^{-5}$ ** & $5.333 \pm 1.301$ ** & $6.071 \pm 3.351$ ** \\
 Griewank & $\mathbf{0.0000 \pm 0.0000}$ & $0.001 \pm 0.003$ & $1.063 \pm 0.092$ ** & $0.091 \pm 0.023$ ** & $2.196 \pm 0.321$ ** & $3.220 \pm 2.500$ ** \\
-Schwefel & $1038.4 \pm 281.5$ & $\mathbf{616.2 \pm 323.5}$ & $1207.5 \pm 292.5$ & $963.6 \pm 411.5$ & $2470.6 \pm 423.0$ ** & $1428.7 \pm 339.7$ \\
+Schwefel & $1524.3 \pm 308.1$ & $\mathbf{616.2 \pm 323.5}$ ** & $1207.5 \pm 292.5$ & $963.6 \pm 411.5$ & $2470.6 \pm 423.0$ * & $1428.7 \pm 339.7$ \\
 Levy & $\mathbf{7.64 \times 10^{-15} \pm 0.00}$ & $\mathbf{7.64 \times 10^{-15} \pm 0.00}$ & $0.308 \pm 0.098$ ** & $1.18 \times 10^{-8} \pm 1.51 \times 10^{-8}$ ** & $0.697 \pm 0.544$ ** & $0.842 \pm 0.498$ ** \\
 Lennard-Jones & $\mathbf{-3.000 \pm 0.000}$ & $\mathbf{-3.000 \pm 0.000}$ & $-2.880 \pm 0.087$ ** & $\mathbf{-3.000 \pm 0.000}$ & $-2.639 \pm 0.369$ ** & $-2.700 \pm 0.389$ \\
 \bottomrule

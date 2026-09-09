@@ -50,9 +50,12 @@ class FlowOpt:
       2. Gibbs-Boltzmann Target Measure:
          Constructs target distribution p_{t+1} \propto p_t exp(-beta * f(x)) with scale-invariant
          logarithmic elite rank weights w_i = (ln(mu + 0.5) - ln(i)) / sum.
-      3. Minimal-Action Trajectory Straightening (Sinkhorn OT):
-         Pairs source distribution samples with target proposals by solving Entropic Optimal Transport,
-         yielding linear, collision-free velocity fields u_t(x) = y_{OT}(x) - x.
+      3. Minimal-Action Trajectory Straightening with Stochastic Interpolant Annealing:
+         Pairs source distribution samples with target proposals by solving Entropic Optimal Transport.
+         Under Stochastic Interpolant theory (Albergo & Vanden-Eijnden, 2023), the entropic parameter
+         epsilon_t is dynamically annealed from exploration (diffuse coupling, epsilon_0 = 0.5) to
+         exploitation (deterministic minimal-action geodesics, epsilon_min = 1e-5), yielding smooth,
+         straight-line velocity fields u_t(x) = y_{OT}(x) - x without premature basin trapping.
       4. Exact Flow-Path Cumulative Step-Size Adaptation (FP-CSA):
          Integrates the instantaneous Optimal Transport velocity field into a conjugate flow path,
          rigorously scaled by sqrt(mu_eff) so E[||z_flow||] = chi_D under the null hypothesis.
@@ -66,7 +69,8 @@ class FlowOpt:
         dim,
         pop_size=30,
         bounds=None,
-        reg_ot=0.05,
+        reg_ot=0.5,
+        reg_ot_min=1e-5,
         device=None,
         seed=None
     ):
@@ -98,6 +102,11 @@ class FlowOpt:
         self.sigma = 0.3 * torch.mean(self.ub - self.lb).item()
         self.C = torch.eye(dim, device=self.device, dtype=torch.float32)
         
+        # Entropic OT annealing schedule parameters
+        self.reg_ot_init = reg_ot
+        self.reg_ot_min = reg_ot_min
+        self.reg_ot = reg_ot
+        
         # Scale-invariant rank weights for top mu elites
         raw_weights = torch.tensor([math.log(self.mu + 0.5) - math.log(i + 1) for i in range(self.mu)], device=self.device)
         self.weights = raw_weights / raw_weights.sum()
@@ -115,7 +124,6 @@ class FlowOpt:
         self.c_1 = 2.0 / ((self.dim + 1.3) ** 2 + self.mu_eff)
         self.c_mu = min(1.0 - self.c_1, 2.0 * (self.mu_eff - 2.0 + 1.0 / self.mu_eff) / ((self.dim + 2.0) ** 2 + self.mu_eff))
         
-        self.reg_ot = reg_ot
         self.best_x = self.m.clone()
         self.best_f = float("inf")
         self.history = []
@@ -131,7 +139,7 @@ class FlowOpt:
     def clamp(self, x):
         return torch.clamp(x, min=self.lb, max=self.ub)
 
-    def optimize(self, objective_fn, max_iters=250, max_evals=None, verbose=False):
+    def optimize(self, objective_fn, max_iters=200, max_evals=None, verbose=False):
         if max_evals is not None:
             max_iters = max(1, max_evals // self.pop_size)
             
@@ -139,8 +147,13 @@ class FlowOpt:
         N = self.N
         
         for iteration in range(1, max_iters + 1):
+            # Dynamic Entropic Regularization (Stochastic Interpolant Noise Schedule)
+            prog = (iteration - 1) / max(max_iters - 1, 1)
+            reg_t = self.reg_ot_init * (1.0 - prog) + self.reg_ot_min * prog
+            
             # --- 1. Spectral Decomposition of Flow Metric Tensor ---
             C_reg = self.C + 1e-14 * torch.eye(D, device=self.device)
+            C_reg = 0.5 * (C_reg + C_reg.t())
             evals, evecs = torch.linalg.eigh(C_reg)
             evals = torch.clamp(evals, min=1e-14)
             B = evecs @ torch.diag(torch.sqrt(evals))
@@ -167,7 +180,7 @@ class FlowOpt:
             full_weights = full_weights / full_weights.sum()
             
             # --- 4. Entropic Optimal Transport Trajectory Straightening ---
-            matched_y = sinkhorn_ot_fast(x_samples, x_samples, full_weights, reg=self.reg_ot)
+            matched_y = sinkhorn_ot_fast(x_samples, x_samples, full_weights, reg=reg_t)
             u = matched_y - x_samples
             
             # --- 5. Continuous Probability Flow Parameter Integration ---
