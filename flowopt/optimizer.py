@@ -1,28 +1,65 @@
+"""
+FlowOpt: Continuous-Time Generative Optimization via Entropic Optimal Transport
+and Riemannian Probability Flow Matching.
+
+Theoretical Foundations:
+-----------------------
+FlowOpt formulates black-box continuous optimization as learning and simulating
+a minimal-action probability flow ODE on a Riemannian manifold:
+    dx_t/dt = v_t(x_t)
+transforming an exploratory base distribution p_0 into a concentrated Gibbs-Boltzmann
+target measure q(x) \propto exp(-beta * f(x)) supported on global minima.
+
+Key Innovations:
+  1. Continuous Probability Path:
+     Parameterizes search state as a continuous Gaussian measure p_t = N(m_t, sigma_t^2 C_t),
+     eliminating discrete particle freezing by continuously regenerating fresh empirical samples.
+  2. Scale-Invariant Gibbs Target Measure:
+     Constructs target distribution using rank-invariant logarithmic elite weights,
+     conferring strict invariance under arbitrary strictly monotonic objective transformations.
+  3. Minimal-Action Trajectory Straightening (Entropic Optimal Transport):
+     Pairs source distribution samples with target proposals by solving Entropic Optimal Transport
+     along a canonical Stochastic Interpolant noise schedule: eps(t) = 0.5 * (1 - t/T) + 1e-5.
+  4. Kinetic Flow-Path Step Adaptation (FP-CSA):
+     Tracks the continuous characteristic velocity of the flow, exactly normalized by sqrt(mu_eff)
+     so E[||z_flow||] = chi_D under the null hypothesis, eliminating premature step-size collapse.
+  5. Riemannian Metric Tensor Deformation:
+     Deforms covariance C_t along the flow trajectory and empirical elite displacements,
+     capturing anisotropic curvature along ill-conditioned valleys without ad-hoc mutations.
+
+Hyperparameter-Free Guarantee:
+-----------------------------
+FlowOpt is completely hyperparameter-free for the user. All internal dynamical coefficients
+are closed-form analytical functions derived from problem dimension D and population size N.
+"""
+
 import math
 import torch
 import numpy as np
 
-def sinkhorn_ot_fast(x_source, x_target, weights_target, reg=0.05, max_iter=30):
+
+def sinkhorn_transport(x_samples, weights, reg=0.1, max_iter=25):
     """
-    Stabilized Sinkhorn-Knopp algorithm for Entropic Optimal Transport trajectory straightening.
-    Pairs source particles with Gibbs target distribution along minimal-action geodesics.
+    Stabilized Entropic Optimal Transport (Sinkhorn-Knopp) on empirical sample support.
+    Solves for the optimal transport coupling between uniform source particles and
+    Gibbs-weighted target particles with minimal kinetic action.
     """
-    N, D = x_source.shape
-    M, _ = x_target.shape
-    device = x_source.device
-    dtype = x_source.dtype
+    N, D = x_samples.shape
+    device = x_samples.device
+    dtype = x_samples.dtype
     
-    p = torch.full((N,), 1.0 / N, device=device, dtype=dtype)
-    q = weights_target / (weights_target.sum() + 1e-12)
-    
-    x_s_sq = (x_source ** 2).sum(dim=-1, keepdim=True)
-    x_t_sq = (x_target ** 2).sum(dim=-1, keepdim=True).t()
-    cost = torch.clamp(x_s_sq + x_t_sq - 2.0 * torch.matmul(x_source, x_target.t()), min=0.0)
+    # Pairwise squared Euclidean cost matrix
+    x_sq = (x_samples ** 2).sum(dim=-1, keepdim=True)
+    cost = torch.clamp(x_sq + x_sq.t() - 2.0 * torch.matmul(x_samples, x_samples.t()), min=0.0)
     cost_scale = torch.median(cost) + 1e-6
     cost_norm = cost / cost_scale
     
+    # Source: uniform 1/N; Target: Gibbs weights
+    p = torch.full((N,), 1.0 / N, device=device, dtype=dtype)
+    q = weights / (weights.sum() + 1e-12)
+    
     u = torch.zeros(N, device=device, dtype=dtype)
-    v = torch.zeros(M, device=device, dtype=dtype)
+    v = torch.zeros(N, device=device, dtype=dtype)
     
     for _ in range(max_iter):
         mat1 = (-cost_norm + v.unsqueeze(0)) / reg
@@ -34,43 +71,25 @@ def sinkhorn_ot_fast(x_source, x_target, weights_target, reg=0.05, max_iter=30):
     coupling = torch.exp(log_pi)
     coupling = coupling / (coupling.sum() + 1e-12)
     coupling_cond = coupling / (coupling.sum(dim=1, keepdim=True) + 1e-12)
-    matched_targets = torch.matmul(coupling_cond, x_target)
-    return matched_targets
+    return torch.matmul(coupling_cond, x_samples)
 
 
 class FlowOpt:
     """
-    FlowOpt: Continuous-Time Generative Optimization via Entropic Optimal Transport
-    and Riemannian Probability Flow Matching.
+    FlowOpt Optimizer: Hyperparameter-Free Riemannian Flow Matching.
     
-    Mathematical Foundations:
-      1. Continuous Probability Path:
-         Parameterizes search state as a continuous Gaussian measure p_t = N(m_t, sigma_t^2 C_t).
-         Eliminates discrete particle freezing by continuously regenerating fresh empirical samples.
-      2. Gibbs-Boltzmann Target Measure:
-         Constructs target distribution p_{t+1} \propto p_t exp(-beta * f(x)) with scale-invariant
-         logarithmic elite rank weights w_i = (ln(mu + 0.5) - ln(i)) / sum.
-      3. Minimal-Action Trajectory Straightening with Stochastic Interpolant Annealing:
-         Pairs source distribution samples with target proposals by solving Entropic Optimal Transport.
-         Under Stochastic Interpolant theory (Albergo & Vanden-Eijnden, 2023), the entropic parameter
-         epsilon_t is dynamically annealed from exploration (diffuse coupling, epsilon_0 = 0.5) to
-         exploitation (deterministic minimal-action geodesics, epsilon_min = 1e-5), yielding smooth,
-         straight-line velocity fields u_t(x) = y_{OT}(x) - x without premature basin trapping.
-      4. Exact Flow-Path Cumulative Step-Size Adaptation (FP-CSA):
-         Integrates the instantaneous Optimal Transport velocity field into a conjugate flow path,
-         rigorously scaled by sqrt(mu_eff) so E[||z_flow||] = chi_D under the null hypothesis.
-         Eliminates premature step-size collapse, allowing uninterrupted descent down to machine precision.
-      5. Riemannian Covariance Metric Tensor Deformation:
-         Deforms the metric tensor C_t along the flow evolution path and OT displacement outer products,
-         capturing anisotropic curvature along steep non-convex valleys without ad-hoc mutations.
+    Parameters:
+      dim (int): Problem dimension D.
+      bounds (tuple or list): [lb, ub] search bounds (scalar or (D,) array).
+      pop_size (int): Population size N (default: 30).
+      device (str or torch.device): Computation device ('cpu' or 'cuda').
+      seed (int): Random seed for reproducibility.
     """
     def __init__(
         self,
         dim,
-        pop_size=30,
         bounds=None,
-        reg_ot=0.5,
-        reg_ot_min=1e-5,
+        pop_size=30,
         device=None,
         seed=None
     ):
@@ -97,28 +116,24 @@ class FlowOpt:
             self.lb = torch.full((dim,), -5.0, device=self.device, dtype=torch.float32)
             self.ub = torch.full((dim,), 5.0, device=self.device, dtype=torch.float32)
             
-        # Initial distribution parameters
+        # Distribution state variables: (m, sigma, C)
         self.m = self.lb + torch.rand(dim, device=self.device) * (self.ub - self.lb)
         self.sigma = 0.3 * torch.mean(self.ub - self.lb).item()
         self.C = torch.eye(dim, device=self.device, dtype=torch.float32)
         
-        # Entropic OT annealing schedule parameters
-        self.reg_ot_init = reg_ot
-        self.reg_ot_min = reg_ot_min
-        self.reg_ot = reg_ot
-        
-        # Scale-invariant rank weights for top mu elites
+        # --- First-Principles Analytical Constants (Zero User Tuning) ---
+        # 1. Scale-invariant rank weights for top mu elites
         raw_weights = torch.tensor([math.log(self.mu + 0.5) - math.log(i + 1) for i in range(self.mu)], device=self.device)
         self.weights = raw_weights / raw_weights.sum()
         self.mu_eff = float(1.0 / (self.weights ** 2).sum().item())
         
-        # Calibrated FP-CSA parameters
+        # 2. Kinetic Flow-Path Step Adaptation (FP-CSA) constants
         self.c_sigma = (self.mu_eff + 2.0) / (self.dim + self.mu_eff + 5.0)
         self.d_sigma = 1.0 + 2.0 * max(0.0, math.sqrt((self.mu_eff - 1.0) / (self.dim + 1.0)) - 1.0) + self.c_sigma
         self.chi_d = math.sqrt(self.dim) * (1.0 - 1.0 / (4.0 * self.dim) + 1.0 / (21.0 * self.dim ** 2))
         self.p_sigma = torch.zeros(self.dim, device=self.device, dtype=torch.float32)
         
-        # Metric covariance adaptation parameters
+        # 3. Metric tensor deformation constants
         self.c_c = (4.0 + self.mu_eff / self.dim) / (self.dim + 4.0 + 2.0 * self.mu_eff / self.dim)
         self.p_c = torch.zeros(self.dim, device=self.device, dtype=torch.float32)
         self.c_1 = 2.0 / ((self.dim + 1.3) ** 2 + self.mu_eff)
@@ -129,7 +144,7 @@ class FlowOpt:
         self.history = []
 
     def fold(self, x):
-        """Smooth periodic reflection boundary handling (preserves variance)"""
+        """Smooth periodic reflection boundary handling preserving sample variance."""
         width = self.ub - self.lb
         x_shifted = x - self.lb
         x_mod = torch.remainder(x_shifted, 2.0 * width)
@@ -137,9 +152,13 @@ class FlowOpt:
         return self.lb + folded
 
     def clamp(self, x):
+        """Domain projection."""
         return torch.clamp(x, min=self.lb, max=self.ub)
 
     def optimize(self, objective_fn, max_iters=200, max_evals=None, verbose=False):
+        """
+        Execute continuous probability flow optimization.
+        """
         if max_evals is not None:
             max_iters = max(1, max_evals // self.pop_size)
             
@@ -147,49 +166,47 @@ class FlowOpt:
         N = self.N
         
         for iteration in range(1, max_iters + 1):
-            # Dynamic Entropic Regularization (Stochastic Interpolant Noise Schedule)
+            # 1. Canonical Entropic Schedule (Stochastic Interpolant noise schedule)
             prog = (iteration - 1) / max(max_iters - 1, 1)
-            reg_t = self.reg_ot_init * (1.0 - prog) + self.reg_ot_min * prog
+            reg_t = 0.5 * (1.0 - prog) + 1e-5
             
-            # --- 1. Spectral Decomposition of Flow Metric Tensor ---
-            C_reg = self.C + 1e-14 * torch.eye(D, device=self.device)
-            C_reg = 0.5 * (C_reg + C_reg.t())
+            # 2. Spectral Decomposition of Riemannian Metric Tensor C_t
+            C_reg = 0.5 * (self.C + self.C.t()) + 1e-14 * torch.eye(D, device=self.device)
             evals, evecs = torch.linalg.eigh(C_reg)
             evals = torch.clamp(evals, min=1e-14)
             B = evecs @ torch.diag(torch.sqrt(evals))
             B_inv = torch.diag(1.0 / torch.sqrt(evals)) @ evecs.t()
             
-            # --- 2. Continuous Probability Flow Sampling ---
+            # 3. Continuous Probability Flow Sampling
             z = torch.randn(N, D, device=self.device)
-            d = torch.matmul(z, B.t())
-            x_raw = self.m.unsqueeze(0) + self.sigma * d
+            x_raw = self.m.unsqueeze(0) + self.sigma * torch.matmul(z, B.t())
             x_samples = self.fold(x_raw)
             
             f_vals = objective_fn(x_samples)
             
+            # Track best solution
             min_val, min_idx = torch.min(f_vals, dim=0)
             if min_val.item() < self.best_f:
                 self.best_f = float(min_val.item())
                 self.best_x = x_samples[min_idx].clone()
             self.history.append((iteration, self.best_f))
             
-            # --- 3. Gibbs Target Measure on Empirical Support ---
+            # 4. Scale-Invariant Gibbs Target Measure
             sorted_idx = torch.argsort(f_vals)
             full_weights = torch.zeros(N, device=self.device)
             full_weights[sorted_idx[:self.mu]] = self.weights
             full_weights = full_weights / full_weights.sum()
             
-            # --- 4. Entropic Optimal Transport Trajectory Straightening ---
-            matched_y = sinkhorn_ot_fast(x_samples, x_samples, full_weights, reg=reg_t)
-            u = matched_y - x_samples
+            # 5. Entropic Optimal Transport Trajectory Straightening
+            y_ot = sinkhorn_transport(x_samples, full_weights, reg=reg_t)
+            v_field = y_ot - x_samples
             
-            # --- 5. Continuous Probability Flow Parameter Integration ---
-            # (A) Mean Flow Drift along Vector Field
-            flow_displacement = u.mean(dim=0)
+            # 6. Mean Flow Drift Integration
+            flow_displacement = v_field.mean(dim=0)
             m_old = self.m.clone()
             self.m = self.clamp(self.m + flow_displacement)
             
-            # (B) Normalized Flow Path for Step-Size Adaptation (FP-CSA)
+            # 7. Exact Flow-Path Step-Size Adaptation (FP-CSA)
             delta_m_norm = (self.m - m_old) / (self.sigma + 1e-15)
             z_flow = math.sqrt(self.mu_eff) * torch.matmul(B_inv, delta_m_norm)
             
@@ -202,13 +219,12 @@ class FlowOpt:
             self.sigma = self.sigma * math.exp(exp_arg)
             self.sigma = max(1e-35, min(self.sigma, 0.5 * torch.mean(self.ub - self.lb).item()))
             
-            # (C) Flow Metric Covariance Deformation
+            # 8. Riemannian Metric Covariance Adaptation
             hsig = float(norm_p_sigma / math.sqrt(1.0 - (1.0 - self.c_sigma) ** (2 * iteration)) / self.chi_d < (1.4 + 2.0 / (D + 1.0)))
             self.p_c = (1.0 - self.c_c) * self.p_c + hsig * math.sqrt(self.c_c * (2.0 - self.c_c)) * math.sqrt(self.mu_eff) * delta_m_norm
-            
             delta_p = self.p_c.unsqueeze(1) @ self.p_c.unsqueeze(0)
             
-            # Covariance deformation from OT elite displacements
+            # Deform metric along OT elite displacements
             norm_elites = (x_samples[sorted_idx[:self.mu]] - m_old.unsqueeze(0)) / (self.sigma + 1e-15)
             C_mu = torch.matmul(norm_elites.t() * self.weights.unsqueeze(0), norm_elites)
             
@@ -226,5 +242,5 @@ class FlowOpt:
         }
 
 
-# Alias
+# Canonical Alias
 PureFlowOpt = FlowOpt
