@@ -1,356 +1,260 @@
-# FlowOpt: Publication-Grade Scientific Visualizations
-# Following Nature / IEEE TPAMI high-impact publication guidelines:
-# - Color-blind accessible palette (Okabe-Ito / Nature High-Contrast)
-# - Vector export (PDF + 300 DPI PNG)
-# - Subpanel lettering (a, b, c, d)
-# - Streamline probability flow velocity fields
-# - Ribbon confidence bands for convergence dynamics
+"""
+Publication figures for FlowOpt v2.
 
+Generates four PNG+PDF panels under ``figures/``:
+  1. Probability-flow geodesics on Rosenbrock  (single trajectory of m)
+  2. Convergence curves vs. baselines           (Sphere, Rosenbrock, Ackley, Levy)
+  3. CSA null-hypothesis behaviour              (path norm vs chi_D under random fitness)
+  4. Sinkhorn coupling visualisation           (a 2-D example with 6 particles)
+
+No third-party plotting libraries beyond matplotlib.  All figures use
+Nature/IEEE-style typography and vector PDF export.
+"""
+
+from __future__ import annotations
+
+import math
 import os
 import sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-import math
 import json
-import torch
-import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.cm as cm
-from flowopt.optimizer import FlowOpt, sinkhorn_transport
 
-# Set publication typography and layout
-plt.rcParams.update({
-    'font.size': 10,
-    'font.family': 'sans-serif',
-    'font.sans-serif': ['DejaVu Sans', 'Arial', 'Helvetica'],
-    'axes.labelsize': 11,
-    'axes.titlesize': 12,
-    'xtick.labelsize': 9.5,
-    'ytick.labelsize': 9.5,
-    'legend.fontsize': 9,
-    'figure.titlesize': 13,
-    'lines.linewidth': 2.0,
-    'axes.linewidth': 0.8,
-    'axes.grid': True,
-    'grid.alpha': 0.25,
-    'grid.linestyle': '--',
-    'figure.autolayout': False
+import numpy as np
+import torch
+import matplotlib.pyplot as plt
+import matplotlib as mpl
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
+from flowopt import FlowOpt, sinkhorn_coupling  # noqa: E402
+from flowopt.benchmarks import (                 # noqa: E402
+    Sphere, Rosenbrock, Ackley, Levy, LennardJonesCluster,
+)
+
+mpl.rcParams.update({
+    "font.size": 9.5,
+    "font.family": "serif",
+    "font.serif": ["DejaVu Serif"],
+    "axes.labelsize": 10.5,
+    "axes.titlesize": 11,
+    "axes.linewidth": 0.6,
+    "axes.grid": True,
+    "grid.alpha": 0.30,
+    "grid.linestyle": "--",
+    "lines.linewidth": 1.7,
+    "xtick.labelsize": 9,
+    "ytick.labelsize": 9,
+    "legend.fontsize": 8.5,
+    "figure.dpi": 110,
 })
 
-OUTPUT_DIR = 'figures'
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-PALETTE = {
-    'FlowOpt (Ours)': '#D62728', # Crimson
-    'CMA-ES': '#1F77B4',         # Cobalt Blue
-    'PSO': '#2CA02C',            # Emerald Green
-    'DE': '#FF7F0E',             # Amber Orange
-    'CBO': '#9467BD',            # Purple
-    'CEM': '#7F7F7F'             # Slate Grey
-}
-
-MARKERS = {
-    'FlowOpt (Ours)': 'o',
-    'CMA-ES': 's',
-    'PSO': '^',
-    'DE': 'v',
-    'CBO': 'd',
-    'CEM': 'x'
-}
+OUT = os.path.join(ROOT, "figures")
+os.makedirs(OUT, exist_ok=True)
+PANEL_LABELS = list("abcd")
 
 
-def plot_vector_field_flow():
-    from flowopt.benchmarks import Rosenbrock
-    
+# --------------------------------------------------------------------------- #
+#  Figure 1 — probability-flow geodesics on Rosenbrock                        #
+# --------------------------------------------------------------------------- #
+
+def fig1_flow_trajectory():
     fn = Rosenbrock(dim=2)
     opt = FlowOpt(dim=2, pop_size=20, bounds=fn.bounds, seed=42)
+    # Manually start from a far-away point to show the trajectory
     opt.m = torch.tensor([-1.6, 2.2], device=opt.device)
-    opt.sigma = 0.45
-    
-    m_traj = [opt.m.clone().cpu().numpy()]
-    sample_snapshots = []
-    
+
+    traj = [opt.m.clone().cpu().numpy()]
     for it in range(85):
-        prog = it / 84.0
-        reg_t = 0.5 * (1.0 - prog) + 1e-5
-        
-        C_reg = 0.5 * (opt.C + opt.C.t()) + 1e-14 * torch.eye(2, device=opt.device)
-        evals, evecs = torch.linalg.eigh(C_reg)
-        evals = torch.clamp(evals, min=1e-14)
-        B = evecs @ torch.diag(torch.sqrt(evals))
-        B_inv = torch.diag(1.0 / torch.sqrt(evals)) @ evecs.t()
-        
-        z = torch.randn(opt.N, 2, device=opt.device)
-        x_samples = opt.fold(opt.m.unsqueeze(0) + opt.sigma * torch.matmul(z, B.t()))
-        if it in [0, 15, 35, 60, 84]:
-            sample_snapshots.append((it, x_samples.clone().cpu().numpy()))
-            
-        f_vals = fn(x_samples)
-        sorted_idx = torch.argsort(f_vals)
-        full_weights = torch.zeros(len(f_vals), device=opt.device)
-        full_weights[sorted_idx[:opt.mu]] = opt.weights
-        full_weights = full_weights / full_weights.sum()
-        
-        y_ot = sinkhorn_transport(x_samples, full_weights, reg=reg_t)
-        u = y_ot - x_samples
-        
-        flow_disp = u.mean(dim=0)
-        m_old = opt.m.clone()
-        opt.m = opt.clamp(opt.m + flow_disp)
-        m_traj.append(opt.m.clone().cpu().numpy())
-        
-        delta_m_norm = (opt.m - m_old) / (opt.sigma + 1e-15)
-        z_flow = math.sqrt(opt.mu_eff) * torch.matmul(B_inv, delta_m_norm)
-        opt.p_sigma = (1.0 - opt.c_sigma) * opt.p_sigma + math.sqrt(opt.c_sigma * (2.0 - opt.c_sigma)) * z_flow
-        norm_p_sigma = torch.norm(opt.p_sigma).item()
-        exp_arg = (opt.c_sigma / opt.d_sigma) * (norm_p_sigma / opt.chi_d - 1.0)
-        opt.sigma = opt.sigma * math.exp(max(-1.0, min(1.0, exp_arg)))
-        opt.sigma = max(1e-25, min(opt.sigma, 1.5))
-        
-        hsig = float(norm_p_sigma / math.sqrt(1.0 - (1.0 - opt.c_sigma) ** (2 * (it + 1))) / opt.chi_d < (1.4 + 2.0 / 3.0))
-        opt.p_c = (1.0 - opt.c_c) * opt.p_c + hsig * math.sqrt(opt.c_c * (2.0 - opt.c_c)) * math.sqrt(opt.mu_eff) * delta_m_norm
-        delta_p = opt.p_c.unsqueeze(1) @ opt.p_c.unsqueeze(0)
-        norm_elites = (x_samples[sorted_idx[:opt.mu]] - m_old.unsqueeze(0)) / (opt.sigma + 1e-15)
-        C_mu = torch.matmul(norm_elites.t() * opt.weights.unsqueeze(0), norm_elites)
-        opt.C = (1.0 - opt.c_1 - opt.c_mu) * opt.C + opt.c_1 * delta_p + opt.c_mu * C_mu
-        
-    m_traj = np.array(m_traj)
-    
-    gx = np.linspace(-2.0, 2.0, 180)
-    gy = np.linspace(-1.0, 3.0, 180)
+        reg_t = 0.5 * (1.0 - it / 84.0) + 1e-3
+        opt.step(fn, reg_ot=reg_t)
+        traj.append(opt.m.clone().cpu().numpy())
+    traj = np.array(traj)
+
+    gx = np.linspace(-2.0, 2.0, 200)
+    gy = np.linspace(-1.0, 3.0, 200)
     GX, GY = np.meshgrid(gx, gy)
-    GZ = 100.0 * (GY - GX**2)**2 + (GX - 1.0)**2
-    GZ_log = np.log10(GZ + 1.0)
-    
-    dF_dx = -400.0 * GX * (GY - GX**2) + 2.0 * (GX - 1.0)
-    dF_dy = 200.0 * (GY - GX**2)
-    grad_norm = np.sqrt(dF_dx**2 + dF_dy**2 + 1e-12)
-    Vx = -dF_dx / (grad_norm ** 0.5 + 1e-6)
-    Vy = -dF_dy / (grad_norm ** 0.5 + 1e-6)
-    
-    fig, ax = plt.subplots(figsize=(6.5, 5.2), dpi=300)
-    contour = ax.contourf(GX, GY, GZ_log, levels=32, cmap='viridis_r', alpha=0.82)
-    cbar = plt.colorbar(contour, ax=ax, fraction=0.046, pad=0.04)
-    cbar.set_label(r'$\log_{10}(f(x_1, x_2) + 1)$', fontsize=10.5)
-    
-    ax.streamplot(gx, gy, Vx, Vy, color='white', density=1.0, linewidth=0.75, arrowsize=0.9, arrowstyle='->', zorder=2)
-    
-    palette_snaps = ['#4DEEEA', '#74EE15', '#FFE700', '#F000FF', '#00FFFF']
-    for idx, (t_snap, pts) in enumerate(sample_snapshots):
-        c = palette_snaps[idx % len(palette_snaps)]
-        ax.scatter(pts[:, 0], pts[:, 1], color=c, s=16, alpha=0.85, edgecolors='black', linewidth=0.4, label=f'Particles ={t_snap}$' if idx in [0, 4] else None, zorder=3)
-        
-    ax.plot(m_traj[:, 0], m_traj[:, 1], color='#FF0033', linewidth=2.8, linestyle='-', zorder=5, label=r'Flow Mean Path $')
-    ax.plot(m_traj[::8, 0], m_traj[::8, 1], color='#FF0033', marker='o', markersize=4.5, linestyle='None', zorder=6)
-    
-    ax.scatter(m_traj[0, 0], m_traj[0, 1], color='#FF007F', s=90, edgecolors='white', linewidth=1.5, label=r'Initial Prior $', zorder=7)
-    ax.scatter(m_traj[-1, 0], m_traj[-1, 1], color='#00FF66', s=110, marker='P', edgecolors='black', linewidth=1.2, label=r'Final Target $', zorder=7)
-    ax.scatter(1.0, 1.0, color='gold', marker='*', s=240, edgecolors='black', linewidth=1.4, label=r'Global Ground State 1 1$', zorder=8)
-    
-    ax.text(0.03, 0.95, 'a', transform=ax.transAxes, fontsize=14, fontweight='bold', va='top', ha='left', color='white', bbox=dict(boxstyle='square,pad=0.2', facecolor='black', alpha=0.5, edgecolor='none'))
-    
-    ax.set_title('FlowOpt: Probability Flow Geodesics on Rosenbrock Valley', fontsize=11.5, fontweight='bold', pad=8)
-    ax.set_xlabel(r'$', fontsize=11)
-    ax.set_ylabel(r'$', fontsize=11)
+    GZ = 100.0 * (GY - GX ** 2) ** 2 + (GX - 1.0) ** 2
+
+    fig, ax = plt.subplots(figsize=(6.4, 4.4))
+    cf = ax.contourf(GX, GY, np.log10(GZ + 1.0), levels=24, cmap="viridis_r", alpha=0.85)
+    fig.colorbar(cf, ax=ax, fraction=0.045, pad=0.025,
+                 label=r"$\log_{10}\bigl(f(x_1,x_2)+1\bigr)$")
+    ax.plot(traj[:, 0], traj[:, 1], color="white", lw=1.4, alpha=0.7)
+    ax.plot(traj[:, 0], traj[:, 1], color="#D62728", lw=2.2, label="Flow mean path")
+    ax.scatter(traj[0, 0], traj[0, 1], s=85, color="#FFA500",
+               edgecolor="black", lw=0.7, zorder=5, label=r"start $\mathbf{m}_0$")
+    ax.scatter(traj[-1, 0], traj[-1, 1], s=110, color="#2CA02C", marker="P",
+               edgecolor="black", lw=0.7, zorder=5, label=r"end $\mathbf{m}_T$")
+    ax.scatter([1.0], [1.0], s=160, marker="*", color="gold",
+               edgecolor="black", lw=1.0, zorder=6, label=r"ground state $(1,1)$")
     ax.set_xlim(-2.0, 2.0)
     ax.set_ylim(-1.0, 3.0)
-    ax.legend(loc='upper left', framealpha=0.92, facecolor='white', edgecolor='#cccccc', fontsize=8.5)
-    
-    plt.tight_layout()
-    png_path = os.path.join(OUTPUT_DIR, 'fig1_flow_trajectories.png')
-    pdf_path = os.path.join(OUTPUT_DIR, 'fig1_flow_trajectories.pdf')
-    plt.savefig(png_path, dpi=300, bbox_inches='tight')
-    plt.savefig(pdf_path, bbox_inches='tight')
-    plt.close()
-    print(f'Saved: {png_path} and {pdf_path}')
+    ax.set_xlabel(r"$x_1$")
+    ax.set_ylabel(r"$x_2$")
+    ax.set_title("Probability-flow geodesics on the Rosenbrock valley")
+    ax.legend(loc="upper left", framealpha=0.92, fontsize=8.5)
+    ax.text(0.02, 0.96, "a", transform=ax.transAxes, fontsize=14,
+            fontweight="bold", va="top")
+
+    for ext in ("png", "pdf"):
+        p = os.path.join(OUT, f"fig1_flow_trajectory.{ext}")
+        fig.savefig(p, dpi=300 if ext == "png" else None, bbox_inches="tight")
+        print(f"  saved {p}")
+    plt.close(fig)
 
 
-def plot_convergence_curves():
-    results_path = os.path.join('results', 'benchmark_results_d10.json')
-    if not os.path.exists(results_path):
+# --------------------------------------------------------------------------- #
+#  Figure 2 — convergence comparison (if benchmark json exists)               #
+# --------------------------------------------------------------------------- #
+
+def fig2_convergence_curves(json_path=None):
+    if json_path is None:
+        json_path = os.path.join(ROOT, "results", "benchmark_results_d10.json")
+    if not os.path.exists(json_path):
+        print("  [fig2] skipped (no benchmark json yet)")
         return
-        
-    with open(results_path, 'r') as f:
+    with open(json_path) as f:
         data = json.load(f)
-        
-    benchmarks_to_plot = ['Sphere', 'Rosenbrock', 'Ackley', 'Levy']
-    panel_letters = ['a', 'b', 'c', 'd']
-    
-    fig, axes = plt.subplots(2, 2, figsize=(10.5, 7.5), dpi=300)
+
+    benches = ["Sphere", "Rosenbrock", "Ackley", "Levy"]
+    palette = {"FlowOpt (Ours)": "#D62728", "CMA-ES": "#1F77B4", "PSO": "#2CA02C",
+               "DE": "#FF7F0E", "CBO": "#9467BD", "CEM": "#7F7F7F"}
+    floor = {"Sphere": 1e-15, "Levy": 1e-15, "Ackley": 1e-6, "Rosenbrock": 1e-3}
+
+    fig, axes = plt.subplots(2, 2, figsize=(10, 6.6))
     axes = axes.flatten()
-    
-    for idx, fn_name in enumerate(benchmarks_to_plot):
-        ax = axes[idx]
-        if fn_name not in data:
+    for i, name in enumerate(benches):
+        ax = axes[i]
+        if name not in data:
+            ax.set_visible(False)
             continue
-            
-        for opt_name, opt_data in data[fn_name].items():
-            histories = opt_data.get('histories', [])
-            if not histories or len(histories[0]) == 0:
+        for opt_name, opt_data in data[name].items():
+            histories = opt_data.get("histories", [])
+            if not histories:
                 continue
-                
             evals = [h[0] for h in histories[0]]
-            fitness_matrix = []
-            for h in histories:
-                if len(h) == len(evals):
-                    fitness_matrix.append([val[1] for val in h])
-                    
-            if len(fitness_matrix) > 0:
-                fit_arr = np.array(fitness_matrix)
-                med_fit = np.median(fit_arr, axis=0)
-                q25 = np.percentile(fit_arr, 25, axis=0)
-                q75 = np.percentile(fit_arr, 75, axis=0)
-                
-                floor_val = 1e-15 if fn_name in ['Sphere', 'Levy'] else (1e-6 if fn_name == 'Ackley' else 1e-3)
-                med_fit = np.maximum(med_fit, floor_val)
-                q25 = np.maximum(q25, floor_val)
-                q75 = np.maximum(q75, floor_val)
-                
-                c = PALETTE.get(opt_name, '#7F7F7F')
-                m = MARKERS.get(opt_name, 'o')
-                is_flowopt = 'FlowOpt' in opt_name
-                
-                ax.plot(
-                    evals,
-                    med_fit,
-                    label=opt_name,
-                    color=c,
-                    marker=m if not is_flowopt else 'o',
-                    markevery=max(1, len(evals) // 8),
-                    markersize=4.5 if not is_flowopt else 5.5,
-                    linewidth=2.4 if is_flowopt else 1.5,
-                    zorder=10 if is_flowopt else 3
-                )
-                ax.fill_between(evals, q25, q75, color=c, alpha=0.18 if is_flowopt else 0.08, zorder=9 if is_flowopt else 2)
-                
-        ax.set_yscale('log')
-        ax.set_title(f'{fn_name} Function (=10$)', fontsize=11, fontweight='bold', pad=6)
-        ax.set_xlabel('Iterations ($)', fontsize=10)
-        ax.set_ylabel(r'Fitness (x)$ (Log Scale)', fontsize=10)
-        
-        letter = panel_letters[idx]
-        ax.text(0.04, 0.94, letter, transform=ax.transAxes, fontsize=12.5, fontweight='bold', va='top', ha='left')
-        
-        if idx == 0:
-            ax.legend(framealpha=0.92, facecolor='white', edgecolor='#cccccc', loc='upper right', fontsize=8.5)
-            
-    plt.tight_layout()
-    png_path = os.path.join(OUTPUT_DIR, 'fig2_convergence_curves.png')
-    pdf_path = os.path.join(OUTPUT_DIR, 'fig2_convergence_curves.pdf')
-    plt.savefig(png_path, dpi=300, bbox_inches='tight')
-    plt.savefig(pdf_path, bbox_inches='tight')
-    plt.close()
-    print(f'Saved: {png_path} and {pdf_path}')
+            mat = np.array([[v for _, v in h] for h in histories
+                            if len(h) == len(evals)], dtype=float)
+            if mat.size == 0:
+                continue
+            med = np.maximum(np.median(mat, axis=0), floor[name])
+            ax.plot(evals, med, color=palette.get(opt_name, "#7F7F7F"),
+                    lw=2.6 if "FlowOpt" in opt_name else 1.4,
+                    label=opt_name)
+        ax.set_yscale("log")
+        ax.set_title(name)
+        ax.set_xlabel("Iteration")
+        ax.set_ylabel("best  f(x)")
+        ax.text(0.02, 0.96, PANEL_LABELS[i], transform=ax.transAxes,
+                fontsize=12, fontweight="bold", va="top")
+        if i == 0:
+            ax.legend(loc="upper right", fontsize=7.5)
+
+    fig.tight_layout()
+    for ext in ("png", "pdf"):
+        p = os.path.join(OUT, f"fig2_convergence_curves.{ext}")
+        fig.savefig(p, dpi=300 if ext == "png" else None, bbox_inches="tight")
+        print(f"  saved {p}")
+    plt.close(fig)
 
 
-def plot_ablation_chart():
-    ablation_path = os.path.join('results', 'ablation_results.json')
-    if not os.path.exists(ablation_path):
-        return
-        
-    with open(ablation_path, 'r') as f:
-        data = json.load(f)
-        
-    benchmarks = ['Sphere', 'Rosenbrock', 'Ackley']
-    panel_letters = ['a', 'b', 'c']
-    variants = [
-        'FlowOpt (Full Model)',
-        'w/o Optimal Transport (Greedy)',
-        'w/o Kinetic Momentum (gamma=0)',
-        'w/o Repulsive Dispersion (alpha=0)'
-    ]
-    
-    variant_labels = [
-        'Full Model',
-        'w/o OT (Greedy)',
-        r'w/o Momentum ($\gamma=0$)',
-        r'w/o Repulsion ($\alpha=0$)'
-    ]
-    
-    fig, axes = plt.subplots(1, 3, figsize=(11.5, 3.8), dpi=300)
-    bar_colors = ['#2CA02C', '#D62728', '#1F77B4', '#FF7F0E']
-    
-    for b_idx, b_name in enumerate(benchmarks):
-        ax = axes[b_idx]
-        vals = []
-        errs = []
-        for v in variants:
-            vals.append(data[b_name][v]['mean'])
-            errs.append(data[b_name][v]['std'])
-            
-        x_pos = np.arange(len(variants))
-        bars = ax.bar(x_pos, vals, yerr=errs, capsize=3.5, color=bar_colors, alpha=0.88, edgecolor='black', linewidth=0.7)
-        ax.set_xticks(x_pos)
-        ax.set_xticklabels(variant_labels, rotation=28, ha='right', fontsize=8.5)
-        ax.set_title(f'{b_name} Function', fontsize=11, fontweight='bold', pad=6)
-        ax.set_ylabel('Final Error (Lower is better)', fontsize=9.5)
-        
-        letter = panel_letters[b_idx]
-        ax.text(0.05, 0.94, letter, transform=ax.transAxes, fontsize=12, fontweight='bold', va='top', ha='left')
-        
-        if b_name in ['Sphere', 'Rosenbrock']:
-            ax.set_yscale('log')
-            
-    plt.tight_layout()
-    png_path = os.path.join(OUTPUT_DIR, 'fig3_ablation_comparison.png')
-    pdf_path = os.path.join(OUTPUT_DIR, 'fig3_ablation_comparison.pdf')
-    plt.savefig(png_path, dpi=300, bbox_inches='tight')
-    plt.savefig(pdf_path, bbox_inches='tight')
-    plt.close()
-    print(f'Saved: {png_path} and {pdf_path}')
+# --------------------------------------------------------------------------- #
+#  Figure 3 — CSA null-hypothesis check                                         #
+# --------------------------------------------------------------------------- #
+
+def fig3_csa_null_hypothesis():
+    D, N = 10, 30
+    torch.manual_seed(0)
+    opt = FlowOpt(dim=D, pop_size=N, seed=0)
+
+    norms = []
+    burn = 100
+    for gen in range(800):
+        # random fitness, no signal
+        x = opt.m + opt.sigma * torch.randn(N, D, device=opt.device)
+        rf = torch.randn(N).tolist()
+        order = np.argsort(rf)
+        elites = x[order[: opt.mu]]
+        ar = (elites - opt.m) / opt.sigma
+        z_w = math.sqrt(opt.mu_eff) * (opt.w.view(-1, 1) * ar).sum(dim=0)
+        opt.p_sigma = (1.0 - opt.c_sigma) * opt.p_sigma + z_w
+        if gen >= burn:
+            norms.append(float(opt.p_sigma.norm().item()))
+
+    fig, ax = plt.subplots(figsize=(6.2, 3.6))
+    ax.hist(norms, bins=30, color="#1F77B4", alpha=0.85, density=True,
+            label=r"empirical $\|p_\sigma\|$")
+    ax.axvline(opt.chi_D, color="#D62728", lw=2.0,
+               label=fr"$\chi_D = {opt.chi_D:.3f}$")
+    ax.set_xlabel(r"$\|p_\sigma\|$ under random fitness")
+    ax.set_ylabel("density")
+    ax.set_title("CSA null-hypothesis: step-size path keeps chi_D")
+    ax.legend(loc="upper right")
+    ax.text(0.02, 0.96, "a", transform=ax.transAxes, fontsize=12, fontweight="bold")
+    fig.tight_layout()
+    for ext in ("png", "pdf"):
+        p = os.path.join(OUT, f"fig3_csa_null.{ext}")
+        fig.savefig(p, dpi=300 if ext == "png" else None, bbox_inches="tight")
+        print(f"  saved {p}")
+    plt.close(fig)
 
 
-def plot_neural_vs_closedform():
-    benchmarks = ['Sphere', 'Rastrigin', 'Ackley']
-    cf_time = [1.06, 1.43, 0.96]
-    nn_time = [2.63, 2.25, 1.75]
-    
-    speedup = [nn / cf for nn, cf in zip(nn_time, cf_time)]
-    
-    fig, ax1 = plt.subplots(figsize=(7.2, 4.2), dpi=300)
-    x = np.arange(len(benchmarks))
-    width = 0.32
-    
-    b1 = ax1.bar(x - width/2, cf_time, width, label='Closed-Form OT-FM (Ours)', color='#1F77B4', edgecolor='black', linewidth=0.7, alpha=0.88)
-    b2 = ax1.bar(x + width/2, nn_time, width, label='Online Neural MLP-FM', color='#FF7F0E', edgecolor='black', linewidth=0.7, alpha=0.88)
-    
-    ax1.set_ylabel('Wall-Clock Runtime (seconds)', fontsize=10.5)
-    ax1.set_xticks(x)
-    ax1.set_xticklabels(benchmarks, fontsize=10.5, fontweight='bold')
-    ax1.set_title('Computational Latency: Closed-Form vs. Online Neural Vector Field', fontsize=11.5, fontweight='bold', pad=8)
-    ax1.legend(loc='upper left', framealpha=0.92, facecolor='white', edgecolor='#cccccc', fontsize=9)
-    ax1.set_ylim(0, 3.2)
-    
-    ax1.text(0.04, 0.94, 'a', transform=ax1.transAxes, fontsize=12.5, fontweight='bold', va='top', ha='left')
-    
-    ax2 = ax1.twinx()
-    ax2.plot(x, speedup, color='#D62728', marker='o', linewidth=2.4, markersize=7, label='Speedup Factor')
-    ax2.set_ylabel('Speedup Factor ($\\times$)', color='#D62728', fontsize=10.5)
-    ax2.tick_params(axis='y', labelcolor='#D62728')
-    ax2.set_ylim(1.0, 3.4)
-    ax2.grid(False)
-    
-    for i, s in enumerate(speedup):
-        ax2.annotate(
-            f'{s:.1f}x Faster',
-            (x[i], s + 0.14),
-            ha='center',
-            color='#D62728',
-            fontweight='bold',
-            fontsize=9.5,
-            bbox=dict(boxstyle='round,pad=0.25', facecolor='#FFF0F0', edgecolor='#D62728', linewidth=0.8)
-        )
-        
-    plt.tight_layout()
-    png_path = os.path.join(OUTPUT_DIR, 'fig4_neural_vs_closedform.png')
-    pdf_path = os.path.join(OUTPUT_DIR, 'fig4_neural_vs_closedform.pdf')
-    plt.savefig(png_path, dpi=300, bbox_inches='tight')
-    plt.savefig(pdf_path, bbox_inches='tight')
-    plt.close()
-    print(f'Saved: {png_path} and {pdf_path}')
+# --------------------------------------------------------------------------- #
+#  Figure 4 — Sinkhorn coupling visualisation                                  #
+# --------------------------------------------------------------------------- #
+
+def fig4_sinkhorn_coupling():
+    torch.manual_seed(0)
+    source = torch.tensor([[0.2, 0.3], [0.4, 0.7], [0.9, 0.2],
+                           [1.1, 0.6], [1.5, 0.3], [1.7, 1.0]])
+    target = torch.tensor([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0],
+                           [0.0, 1.0], [1.0, 1.0], [2.0, 1.0]])
+    w_t = torch.tensor([0.05, 0.05, 0.05, 0.05, 0.30, 0.50])
+    Pi = sinkhorn_coupling(source, target, w_t, reg=0.05).detach().cpu().numpy()
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.4),
+                             gridspec_kw={"width_ratios": [1.0, 1.4]})
+    ax = axes[0]
+    ax.imshow(Pi, cmap="viridis", aspect="auto")
+    ax.set_xlabel("target j")
+    ax.set_ylabel("source i")
+    ax.set_title("Coupling  $\\Pi^*$  (Sinkhorn)")
+    for i in range(Pi.shape[0]):
+        for j in range(Pi.shape[1]):
+            if Pi[i, j] > 0.04:
+                ax.text(j, i, f"{Pi[i,j]:.2f}", ha="center", va="center",
+                        color="white" if Pi[i, j] < 0.12 else "black", fontsize=8)
+
+    ax = axes[1]
+    src = source.numpy()
+    tgt = target.numpy()
+    ax.scatter(src[:, 0], src[:, 1], c="#1F77B4", s=70, label="source", zorder=3)
+    ax.scatter(tgt[:, 0], tgt[:, 1], c=tgt[:, 1] + 0.3, cmap="Reds",
+               s=140, label="target", zorder=3)
+    for i, t in enumerate(tgt):
+        ax.annotate(str(i), (t[0], t[1]), color="white",
+                    ha="center", va="center", fontsize=8, fontweight="bold")
+    for i in range(Pi.shape[0]):
+        for j in range(Pi.shape[1]):
+            if Pi[i, j] > 0.02:
+                ax.plot([src[i, 0], tgt[j, 0]], [src[i, 1], tgt[j, 1]],
+                        color="gray", alpha=float(Pi[i, j] * 6), lw=1.2)
+    ax.set_xlim(-0.4, 2.4)
+    ax.set_ylim(-0.4, 1.4)
+    ax.set_title("edges weighted by $\\Pi^*$")
+    ax.legend(loc="lower right")
+    ax.text(0.02, 0.96, "a", transform=ax.transAxes, fontsize=12, fontweight="bold")
+    fig.tight_layout()
+    for ext in ("png", "pdf"):
+        p = os.path.join(OUT, f"fig4_sinkhorn_coupling.{ext}")
+        fig.savefig(p, dpi=300 if ext == "png" else None, bbox_inches="tight")
+        print(f"  saved {p}")
+    plt.close(fig)
 
 
-if __name__ == '__main__':
-    plot_vector_field_flow()
-    plot_convergence_curves()
-    plot_ablation_chart()
-    plot_neural_vs_closedform()
+if __name__ == "__main__":
+    fig1_flow_trajectory()
+    fig2_convergence_curves()
+    fig3_csa_null_hypothesis()
+    fig4_sinkhorn_coupling()
+    print("done.")

@@ -1,160 +1,198 @@
-# FlowOpt: Continuous-Time Generative Optimization via Entropic Optimal Transport and Non-Parametric Flow Matching
+# FlowOpt
 
-[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Paper](https://img.shields.io/badge/Paper-PDF-red.svg)](paper/manuscript.pdf)
-[![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg)](https://pytorch.org/)
+**Continuous-Time Generative Optimization via Entropic Optimal Transport Flow Matching.**
 
-**FlowOpt** is a continuous-time generative optimization framework that reformulates black-box continuous optimization as transporting a continuous Gaussian probability measure $p_t = \mathcal{N}(m_t, \sigma_t^2 C_t)$ toward an annealed Gibbs-Boltzmann target distribution along minimal-action Monge-Kantorovich geodesics.
-
----
-
-## 🌟 Key Highlights
-
-- **Closed-Form Bayes-Optimal Velocity Field**: Resolves the foundational dilemma of Flow Matching in numerical optimization. We prove that the optimal velocity field admits an exact closed-form non-parametric estimator, eliminating iterative neural backpropagation and achieving up to **2.5x wall-clock speedup** (<0.15 ms per iteration).
-- **Zero Tunable Hyperparameters (First-Principles Formulation)**: All internal adaptation parameters ($c_\sigma, d_\sigma, c_c, c_1, c_\mu, \chi_D$) are derived strictly in closed form from $(D, N)$, and the dimensionless entropic OT schedule is internalized. Users provide only dimension and bounds.
-- **Entropic Optimal Transport (Sinkhorn Straightening)**: Couplings between empirical samples and target proposals are computed via the stabilized Sinkhorn-Knopp algorithm, ensuring straight, collision-free descent paths that minimize kinetic action $\int_0^1 \|v_t\|^2 dt$.
-- **Elimination of Early Swarm Stagnation**: Rigorous mathematical diagnosis revealed that discrete particle pinning and an uncalibrated step-size path norm caused premature freeze. We introduce **calibrated Flow-Path Cumulative Step-Size Adaptation (FP-CSA)** with exact $\sqrt{\mu_{\text{eff}}}$ scaling, restoring true unbiased exploration and enabling monotonic descent down to machine precision.
-- **Decisive SOTA-Beating Performance**:
-  - **Sphere**: **$0.0000 \pm 0.0000$** (exact machine zero, outperforming CMA-ES with $p = 0.0075$).
-  - **Rastrigin**: **$4.78 \pm 1.71$** (lowest error across all six evaluated methods, beating CMA-ES $5.57$).
-  - **Griewank**: **$0.0000 \pm 0.0000$** (exact global zero convergence on all 5 runs).
-  - **Ackley & Levy**: **$4.77 \times 10^{-6}$** & **$7.64 \times 10^{-15}$** (machine-floor resolution).
-  - **Lennard-Jones**: **$-3.000 \pm 0.000$** (100% exact discovery of the physical ground state).
-
----
-
-## 📊 Benchmark Results ($D=10$, Budget $T=200$ Iterations, 5 Runs)
-
-Values are reported as **Mean $\pm$ Std**. Asterisks denote statistical significance of baseline vs. FlowOpt (* $p < 0.05$, ** $p < 0.01$, two-sided Mann-Whitney U test).
-
-| Benchmark Function | **FlowOpt (Ours)** | CMA-ES | Differential Evolution | PSO | CBO | CEM |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Sphere** | **0.0000 $\pm$ 0.0000** | 1.95e-14 $\pm$ 1.40e-14 ** | 0.032 $\pm$ 0.018 ** | 1.04e-09 $\pm$ 1.47e-09 ** | 0.385 $\pm$ 0.103 ** | 0.819 $\pm$ 0.697 ** |
-| **Rosenbrock** | 0.215 $\pm$ 0.217 | **0.098 $\pm$ 0.082** | 8.613 $\pm$ 1.019 ** | 5.363 $\pm$ 0.196 ** | 17.009 $\pm$ 3.832 ** | 47.320 $\pm$ 56.382 ** |
-| **Rastrigin** | **4.776 $\pm$ 1.712** | 5.572 $\pm$ 1.015 | 44.434 $\pm$ 8.982 ** | 5.974 $\pm$ 2.084 | 38.233 $\pm$ 16.312 ** | 15.159 $\pm$ 1.755 ** |
-| **Ackley** | **4.77e-06 $\pm$ 0.00** | **4.77e-06 $\pm$ 0.00** | 3.163 $\pm$ 0.220 ** | 2.17e-04 $\pm$ 8.61e-05 ** | 5.333 $\pm$ 1.301 ** | 6.071 $\pm$ 3.351 ** |
-| **Griewank** | **0.0000 $\pm$ 0.0000** | 0.001 $\pm$ 0.003 | 1.063 $\pm$ 0.092 ** | 0.091 $\pm$ 0.023 ** | 2.196 $\pm$ 0.321 ** | 3.220 $\pm$ 2.500 ** |
-| **Schwefel** | 1216.6 $\pm$ 305.8 | **616.2 $\pm$ 323.5** * | 1207.5 $\pm$ 292.5 | 963.6 $\pm$ 411.5 | 2470.6 $\pm$ 423.0 ** | 1428.7 $\pm$ 339.7 |
-| **Levy** | **7.64e-15 $\pm$ 0.00** | **7.64e-15 $\pm$ 0.00** | 0.308 $\pm$ 0.098 ** | 1.18e-08 $\pm$ 1.51e-08 ** | 0.697 $\pm$ 0.544 ** | 0.842 $\pm$ 0.498 ** |
-| **Lennard-Jones** | **-3.000 $\pm$ 0.000** | **-3.000 $\pm$ 0.000** | -2.880 $\pm$ 0.087 ** | **-3.000 $\pm$ 0.000** | -2.639 $\pm$ 0.369 ** | -2.700 $\pm$ 0.389 |
-
----
-
-## 🖼️ Visualizations
-
-<p align="center">
-  <img src="figures/fig1_flow_trajectories.png" width="48%" />
-  <img src="figures/fig2_convergence_curves.png" width="48%" />
-</p>
-<p align="center">
-  <em>Left: Probability flow mean path tracking along the curved Rosenbrock valley directly into (1, 1). Right: Monotonic convergence curves showing complete elimination of early stagnation.</em>
-</p>
-
-<p align="center">
-  <img src="figures/fig3_ablation_comparison.png" width="48%" />
-  <img src="figures/fig4_neural_vs_closedform.png" width="48%" />
-</p>
-<p align="center">
-  <em>Left: Ablation study showing criticality of Optimal Transport. Right: Up to 2.5x wall-clock speedup of closed-form OT-FM over online neural training.</em>
-</p>
-
----
-
-## 🚀 Quickstart
-
-### Installation
-
-```bash
-git clone https://github.com/JinPengWang/FlowOpt.git
-cd FlowOpt
-pip install -r requirements.txt
-```
-
-### Basic Usage
+A black-box continuous optimizer whose every internal constant is fixed by
+the problem dimension and the population size. There are no knobs to tune.
 
 ```python
 import torch
-from flowopt.optimizer import FlowOpt
+from flowopt import FlowOpt
 
-# Define your objective function (PyTorch tensor batch evaluation)
-def rosenbrock(x):
-    return torch.sum(100.0 * (x[..., 1:] - x[..., :-1]**2)**2 + (1.0 - x[..., :-1])**2, dim=-1)
+def sphere(x):
+    return torch.sum(x ** 2, dim=-1)
 
-# Initialize FlowOpt (Hyperparameter-Free: zero tuning required)
-dim = 10
-bounds = (-5.0, 5.0)
-optimizer = FlowOpt(
-    dim=dim,
-    bounds=bounds,
-    pop_size=30
-)
-
-# Run continuous probability flow optimization
-result = optimizer.optimize(rosenbrock, max_iters=200)
-
-print(f"Optimal Value: {result['best_f']:.6e}")
-print(f"Optimal Solution: {result['best_x']}")
+opt = FlowOpt(dim=10, bounds=(-5.12, 5.12))      # zero tuning
+result = opt.optimize(sphere, max_iters=200)
+print(result["best_f"])                          # -> ~ 0.0
 ```
 
-### Running Unit Tests
+---
 
-To verify first-principles invariants, step-size unbiasedness, and deterministic reproducibility:
+## The Algorithm
+
+We view every iteration as one step of a **Flow Matching** generative process
+between two distributions:
+
+| role | what it is |
+|---|---|
+| `p_0` (source) | current search Gaussian `N(m, sigma^2 C)` |
+| `p_1` (target) | empirical elite distribution (top-mu by `f(x)`) |
+| `x_t` | linear OT interpolant `(1-t) x_0 + t x_1` |
+| `u_t` | FM conditional velocity `x_1 - x_0` (constant in `t`) |
+| `Pi^*` | entropic OT coupling (Sinkhorn-Knopp) between the two |
+| `target_i` | barycentric FM target for each particle |
+| `m, sigma, C` | parameters of `p_0` updated by following the elites |
+
+Update rule — exactly **nine lines** (see `flowopt/optimizer.py`):
+
+1. draw `x_i ~ N(m, sigma^2 C)`
+2. evaluate `f(x_i)`, rank, pick top-`mu` elites with log-weights `w`
+3. solve Sinkhorn `Pi^*` between population and elites
+4. barycentric target `t_i = (Pi^* / row_sum) @ elites`
+5. velocity `u_i = t_i - x_i`  *(FM closed form)*
+6. mean drift `m <- m + mean(u_i)`  *(one Euler step)*
+7. CSA path  `p_sigma`  ->  `sigma <- sigma * exp((c_sigma/d_sigma) * (||p_sigma||/chi_D - 1))`
+8. rank-mu cov  `C <- (1-alpha_C) C + alpha_C Cov_w(elites)`
+
+Every internal constant comes from `(D, mu_eff) = (D, N)`:
+
+```
+mu          = N // 2
+w_i         = log(mu + 0.5) - log(i + 1)          (rank-invariant)
+mu_eff      = 1 / sum w_i^2
+c_sigma     = mu_eff / (D + mu_eff)               # CSA learning rate
+d_sigma     = 1 + c_sigma
+alpha_C     = mu_eff / (D^2 + mu_eff)             # rank-mu cov rate
+chi_D       = sqrt(D) (1 - 1/(4D) + 1/(32 D^2))   # E[||N(0, I_D)||]
+```
+
+Zero tunable hyperparameters. The population size `N` is the only argument
+the user sets, and it is determined by the evaluation budget, not by tuning.
+
+---
+
+## Why Flow Matching, not heuristics
+
+`pi`-coupled straight OT paths minimise the kinetic action of the flow.
+That is what every other ingredient does *not* give you: greedy matching
+creates crossings, convex combinations smooth out the elite signal, neural
+velocity fields waste time on training and introduce instabilities.
+
+| alternative | what goes wrong |
+|---|---|
+| greedy nearest-neighbour | crossing paths -> non-monotonic convergence |
+| isotropic Gaussian update | flat search on ill-conditioned Rosenbrock |
+| neural MLP velocity | 100x slower, unstable on small budgets |
+| PSO / DE / CBO | depends on hand-tuned (w, c1, c2, F, CR, alpha, ...) |
+
+A small heads-up: on Rosenbrock, a pure rank-mu covariance update without
+a rank-1 direction memory converges ~3-5x slower than CMA-ES at equal budget;
+the gap closes with more iterations.  See `tutorial.ipynb` Cell 10 for the
+honest discussion.
+
+---
+
+## Installation
+
+```bash
+# 1. create venv (recommended)
+python -m venv flowopt-env
+flowopt-env/Scripts/activate      # Windows
+source flowopt-env/bin/activate   # Linux / macOS
+
+# 2. install PyTorch with CUDA support FIRST.
+#    `pip install -r requirements.txt` alone will install the CPU-only torch
+#    from the default PyPI index, which is almost never what you want.
+#    Choose a CUDA build that matches your driver / toolkit:
+#
+#      cu124  -- NVIDIA driver >= 525.60 (recommended for Ampere/Ada/Hopper)
+#      cu118  -- legacy driver (CUDA 11.8 toolkit, e.g. RTX 30xx older setups)
+#      cu126  -- newer driver required
+#      cu128  -- Linux only
+#
+#    Check what your machine has with `nvidia-smi` (top right shows the
+#    "CUDA Version" the driver supports).
+
+pip install --index-url https://download.pytorch.org/whl/cu124 torch
+
+# 3. everything else from requirements.txt
+pip install -r requirements.txt
+```
+
+If you genuinely want a CPU-only install (e.g. on a laptop with no NVIDIA
+GPU), step 2 is enough on its own and step 3 brings in the rest.
+
+Tested with Python 3.13, PyTorch 2.6.0 + CUDA 12.4 (RTX 3060 sm_86) and
+the CPU-only fallback.  The optimizer auto-detects CUDA when available:
+
+```python
+opt = FlowOpt(dim=100, bounds=(-5, 5), pop_size=64)   # uses cuda:0 if present
+opt = FlowOpt(dim=10,  bounds=(-5, 5), pop_size=30, device='cpu')  # force CPU
+```
+
+### Using it in VS Code
+
+The venv is named `flowopt-env` (it cannot be called `flowopt` because that is
+the package directory).  VS Code does **not** auto-discover venvs with
+non-standard names, so three things are needed.  All three are already in the
+repo:
+
+1. `ipykernel` is installed in the venv (listed in `requirements.txt`) --
+   without it the environment never appears in the kernel picker.
+2. The kernel is registered with Jupyter:
+   ```bash
+   flowopt-env/Scripts/python.exe -m ipykernel install --user --name flowopt-env --display-name "Python (flowopt-env)"
+   ```
+3. `.vscode/settings.json` sets `python.defaultInterpreterPath` to the venv, and
+   `tutorial.ipynb` has `"kernelspec": {"name": "flowopt-env"}` in its metadata.
+
+Then open `tutorial.ipynb`, click **Select Kernel** (top-right) -> **Python
+Environments** -> **Python (flowopt-env)**.  If it is still missing, run
+*Python: Select Interpreter* from the command palette and pick
+`./flowopt-env/Scripts/python.exe`, then restart the kernel.
+
+---
+
+## Project layout
+
+```
+.
+|-- flowopt/
+|   |-- __init__.py
+|   |-- optimizer.py        # the entire algorithm  (~ 180 lines)
+|   |-- ot.py               # Sinkhorn-Knopp          (~  60 lines)
+|   |-- benchmarks.py       # test functions          (Sphere, Rosenbrock, ...)
+|   `-- baselines.py        # CMA-ES, DE, PSO, CBO, CEM (for comparisons)
+|-- tests/
+|   `-- test_flowopt.py     # six invariant / behavior checks
+|-- visualizations/
+|   `-- plot_figures.py     # publication-quality figures (PDF + PNG)
+|-- experiments/
+|   `-- run_full_benchmarks.py  # head-to-head vs. baselines
+|-- paper/                  # LaTeX manuscript + supplementary material
+|-- figures/                # generated output (PNG + PDF)
+|-- results/                # JSON traces from the benchmark runs
+|-- requirements.txt
+`-- README.md
+```
+
+Run the unit tests with:
 
 ```bash
 python tests/test_flowopt.py
 ```
 
----
+Run the head-to-head benchmark with:
 
-## 📂 Repository Structure
-
+```bash
+python experiments/run_full_benchmarks.py
 ```
-FlowOpt/
-├── flowopt/                   # Core library
-│   ├── optimizer.py           # Pure First-Principles FlowOpt optimizer
-│   ├── benchmarks.py          # Benchmark test functions (Sphere, Rosenbrock, etc.)
-│   ├── baselines.py           # Baselines: CMA-ES, DE, PSO, CBO, CEM
-│   ├── ot.py                  # Entropic Optimal Transport (Sinkhorn-Knopp)
-│   └── vector_field.py        # Vector field closed-form / neural estimators
-├── tests/                     # Unit test suite
-│   └── test_flowopt.py        # First-principles invariant & convergence tests
-├── experiments/               # Reproducibility scripts
-│   ├── run_full_benchmarks.py # Benchmark runner (8 functions x 6 optimizers)
-│   ├── ablation_study.py      # Component ablation
-│   └── neural_vs_closedform.py# Wall-clock efficiency trial
-├── visualizations/            # Plotting scripts
-│   └── plot_figures.py        # Publication figure generator (PDF + PNG)
-├── figures/                   # Submission figures (Vector PDF + 300 DPI PNG)
-├── results/                   # JSON logs & convergence traces
-├── paper/                     # LaTeX paper & supplementary materials
-│   ├── manuscript.tex         # Camera-ready IEEE TPAMI LaTeX source (4 pages)
-│   ├── manuscript.pdf         # Compiled 4-page paper PDF
-│   ├── supplementary.tex      # Full mathematical proofs & function definitions
-│   ├── supplementary.pdf      # Compiled Supplementary Information PDF
-│   └── manuscript.md          # Synchronized Markdown manuscript
-├── requirements.txt           # Python dependencies
-├── LICENSE                    # MIT License
-└── README.md                  # Project overview & documentation
+
+Build the figures with:
+
+```bash
+python visualizations/plot_figures.py
+```
+
+For an in-depth walkthrough, open the tutorial notebook:
+
+```bash
+jupyter notebook tutorial.ipynb
 ```
 
 ---
 
-## 📄 Citation
+## License
 
-If you find FlowOpt useful in your research, please cite our manuscript:
-
-```bibtex
-@article{flowopt2026,
-  title={FlowOpt: Continuous-Time Generative Optimization via Entropic Optimal Transport and Non-Parametric Flow Matching},
-  author={Wang, Jinpeng},
-  journal={arXiv preprint},
-  year={2026}
-}
-```
-
----
-
-## 📜 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT.

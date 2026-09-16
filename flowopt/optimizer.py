@@ -1,262 +1,267 @@
 """
-FlowOpt: Continuous-Time Generative Optimization via Entropic Optimal Transport
-and Riemannian Probability Flow Matching.
+FlowOpt --- Continuous-Time Generative Optimization
+====================================================
 
-Theoretical Foundations:
------------------------
-FlowOpt formulates black-box continuous optimization as learning and simulating
-a minimal-action probability flow ODE on a Riemannian manifold:
-    dx_t/dt = v_t(x_t)
-transforming an exploratory base distribution p_0 into a concentrated Gibbs-Boltzmann
-target measure q(x) \propto exp(-beta * f(x)) supported on global minima.
+Idea in one line
+-----------------
+We treat black-box minimization as *transport*: at every iteration we have a
+search distribution p_0 = N(m, sigma^2 C). We pick a target distribution p_1
+concentrated on the current elites, and we solve the Entropic Optimal Transport
+between p_0 and p_1. The OT pairing defines a deterministic closed-form
+conditional velocity field u(x_0) = target(x_0) - x_0 (the linear-interpolant
+velocity from Flow Matching). One Euler step along this velocity produces the
+new p_0, then we update (m, sigma, C) by following the elite statistics.
 
-Key Innovations:
-  1. Continuous Probability Path:
-     Parameterizes search state as a continuous Gaussian measure p_t = N(m_t, sigma_t^2 C_t),
-     eliminating discrete particle freezing by continuously regenerating fresh empirical samples.
-  2. Scale-Invariant Gibbs Target Measure:
-     Constructs target distribution using rank-invariant logarithmic elite weights,
-     conferring strict invariance under arbitrary strictly monotonic objective transformations.
-  3. Minimal-Action Trajectory Straightening (Entropic Optimal Transport):
-     Pairs source distribution samples with target proposals by solving Entropic Optimal Transport
-     along a canonical Stochastic Interpolant noise schedule: eps(t) = 0.5 * (1 - t/T) + 1e-5.
-  4. Kinetic Flow-Path Step Adaptation (FP-CSA):
-     Tracks the continuous characteristic velocity of the flow, exactly normalized by sqrt(mu_eff)
-     so E[||z_flow||] = chi_D under the null hypothesis, eliminating premature step-size collapse.
-  5. Riemannian Metric Tensor Deformation:
-     Deforms covariance C_t along the flow trajectory and empirical elite displacements,
-     capturing anisotropic curvature along ill-conditioned valleys without ad-hoc mutations.
+This file is intentionally very short. The whole algorithm is one class,
+~120 lines. There are ZERO user-tunable hyperparameters: every internal
+constant is fixed by (D, N) through closed-form first-principles formulae.
 
-Hyperparameter-Free Guarantee:
------------------------------
-FlowOpt is completely hyperparameter-free for the user. All internal dynamical coefficients
-are closed-form analytical functions derived from problem dimension D and population size N.
+Why this is "Flow Matching", not heuristic stacking
+---------------------------------------------------
+Flow Matching (Lipman et al., 2023) defines for any conditional vector field
+u_t(x|x_0, x_1) a marginal vector field v_t(x) = E[x_1 - x_0 | x_t = x].
+Under the linear Optimal Transport interpolant:
+
+    x_t = (1-t) x_0 + t x_1       =>     u_t = dx_t/dt = x_1 - x_0    (constant in t)
+
+the marginal velocity field admits a deterministic closed form whenever we can
+solve the OT plan between samples of p_0 and samples of p_1. We use Entropic
+OT (Sinkhorn) precisely for that.
+
+The Gaussian search state is updated as an EMA toward the (sigma, C) of the
+elite population, with one classical trick (Cumulative Step-Size Adaptation,
+Hansen 2008) for sigma.  Stripped of: rank-1 path (p_c), hsig gating, separate
+c_c, c_1/c_mu --- all of them were redundant knobs that did not improve
+interpretability and were prone to mis-tuning.  The two remaining scalars
+(c_sigma, alpha_C) are derived from (D, mu_eff) and have natural meanings:
+
+    c_sigma = mu_eff / (D + mu_eff)         # CSA learning rate
+    alpha_C  = mu_eff / (D^2 + mu_eff)      # rank-mu cov learning rate
+
+Population size N is the only knob, and even that one is "physics", not
+"tuning": the user has to specify the budget of evaluations per iteration.
 """
 
+from __future__ import annotations
+
 import math
+from typing import Callable
+
 import torch
-import numpy as np
 
 
-def sinkhorn_transport(x_samples, *args, **kwargs):
+# --------------------------------------------------------------------------- #
+#  First-principles constants (no learned weights, no magic numbers)         #
+# --------------------------------------------------------------------------- #
+
+def _chi_D(D: int) -> float:
+    """E[|| N(0, I_D) ||] via Stirling expansion to O(1/D^2).
+       chi_D ~ sqrt(D) * (1 - 1/(4D) + 1/(32 D^2))
     """
-    Stabilized Entropic Optimal Transport (Sinkhorn-Knopp) on empirical sample support.
-    Supports both (x, weights, reg) and legacy (x, y, weights, reg).
+    return math.sqrt(D) * (1.0 - 1.0 / (4.0 * D) + 1.0 / (32.0 * D * D))
+
+
+def _log_rank_weights(mu: int, device, dtype) -> torch.Tensor:
+    """Logarithmic weights for the top-mu sorted by fitness.  Rank-invariant
+       under any strictly monotone transformation of the objective.
+       w_i = (log(mu + 0.5) - log(i + 1)) / normalizer, i = 0..mu-1.
     """
-    if len(args) == 1:
-        weights = args[0]
-    elif len(args) >= 2:
-        weights = args[1]
-    else:
-        weights = kwargs.get('weights', None)
-        
-    reg = kwargs.get('reg', 0.1)
-    max_iter = kwargs.get('max_iter', 25)
-    
-    N, D = x_samples.shape
-    device = x_samples.device
-    dtype = x_samples.dtype
-    
-    # Pairwise squared Euclidean cost matrix
-    x_sq = (x_samples ** 2).sum(dim=-1, keepdim=True)
-    cost = torch.clamp(x_sq + x_sq.t() - 2.0 * torch.matmul(x_samples, x_samples.t()), min=0.0)
-    cost_scale = torch.median(cost) + 1e-6
-    cost_norm = cost / cost_scale
-    
-    # Source: uniform 1/N; Target: Gibbs weights
-    p = torch.full((N,), 1.0 / N, device=device, dtype=dtype)
-    q = weights / (weights.sum() + 1e-12)
-    
-    u = torch.zeros(N, device=device, dtype=dtype)
-    v = torch.zeros(N, device=device, dtype=dtype)
-    
+    raw = torch.tensor([math.log(mu + 0.5) - math.log(i + 1) for i in range(mu)],
+                       device=device, dtype=dtype)
+    return raw / raw.sum()
+
+
+# --------------------------------------------------------------------------- #
+#  Entropic OT -- the FM ingredient                                            #
+# --------------------------------------------------------------------------- #
+
+def sinkhorn_coupling(source: torch.Tensor,
+                      target: torch.Tensor,
+                      w_target: torch.Tensor,
+                      reg: float,
+                      max_iter: int = 60) -> torch.Tensor:
+    """Stabilized Sinkhorn-Knopp:  min_{Pi in U(1/N, w)}  <Pi, C> + reg * H(Pi)
+
+    Returns Pi* of shape (len(source), len(target)).  Marginal constraints are
+    enforced via vector log-domain updates; ``1e-30`` floors prevent log(0).
+    """
+    N, _ = source.shape
+    M, _ = target.shape
+
+    # Squared-Euclidean cost via the (a-b)^2 = a^2 + b^2 - 2ab trick.
+    s_sq = (source ** 2).sum(dim=-1, keepdim=True)
+    t_sq = (target ** 2).sum(dim=-1, keepdim=True).t()
+    cost = (s_sq + t_sq - 2.0 * source @ target.t()).clamp_min(0.0)
+    # Median scaling -> reg is meaningful across problem scales.
+    cost = cost / (cost.median() + 1e-12)
+
+    p = torch.full((N,), 1.0 / N, device=source.device, dtype=source.dtype)
+    q = w_target / (w_target.sum() + 1e-12)
+
+    u = torch.zeros(N, device=source.device, dtype=source.dtype)
+    v = torch.zeros(M, device=source.device, dtype=source.dtype)
+    log_p = torch.log(p + 1e-30)
+    log_q = torch.log(q + 1e-30)
     for _ in range(max_iter):
-        mat1 = (-cost_norm + v.unsqueeze(0)) / reg
-        u = reg * (torch.log(p + 1e-16) - torch.logsumexp(mat1, dim=1))
-        mat2 = (-cost_norm + u.unsqueeze(1)) / reg
-        v = reg * (torch.log(q + 1e-16) - torch.logsumexp(mat2, dim=0))
-        
-    log_pi = (u.unsqueeze(1) + v.unsqueeze(0) - cost_norm) / reg
-    coupling = torch.exp(log_pi)
-    coupling = coupling / (coupling.sum() + 1e-12)
-    coupling_cond = coupling / (coupling.sum(dim=1, keepdim=True) + 1e-12)
-    return torch.matmul(coupling_cond, x_samples)
+        u_new = reg * (log_p - torch.logsumexp((v.unsqueeze(0) - cost) / reg, dim=1))
+        v = reg * (log_q - torch.logsumexp((u_new.unsqueeze(1) - cost) / reg, dim=0))
+        u = u_new
 
+    return torch.exp((u.unsqueeze(1) + v.unsqueeze(0) - cost) / reg)
+
+
+# --------------------------------------------------------------------------- #
+#  FlowOpt --- the entire optimizer                                            #
+# --------------------------------------------------------------------------- #
 
 class FlowOpt:
+    """Hyperparameter-free Flow Matching optimizer.
+
+    Parameters
+    ----------
+    dim : int            problem dimension D
+    bounds               (lb, ub); scalar broadcasts to (D,)
+    pop_size : int       N (default 30). The ONLY user knob.
+    device               'cpu' / 'cuda' (auto-detected if None)
+    seed : int | None    deterministic reproduction
+
+    The state variables (m, sigma, L, p_sigma) carry one Gaussian search
+    distribution and one path.  An iteration consists of nine commented
+    lines; see ``step`` below.
     """
-    FlowOpt Optimizer: Hyperparameter-Free Riemannian Flow Matching.
-    
-    Parameters:
-      dim (int): Problem dimension D.
-      bounds (tuple or list): [lb, ub] search bounds (scalar or (D,) array).
-      pop_size (int): Population size N (default: 30).
-      device (str or torch.device): Computation device ('cpu' or 'cuda').
-      seed (int): Random seed for reproducibility.
-    """
-    def __init__(
-        self,
-        dim,
-        bounds=None,
-        pop_size=30,
-        device=None,
-        seed=None
-    ):
+
+    def __init__(self, dim: int, bounds=(-5.0, 5.0), pop_size: int = 30,
+                 device=None, seed: int | None = None):
         self.dim = dim
-        self.device = torch.device(device if device else ("cuda" if torch.cuda.is_available() else "cpu"))
-        
+        self.device = torch.device(
+            device if device else ("cuda" if torch.cuda.is_available() else "cpu")
+        )
         if seed is not None:
             torch.manual_seed(seed)
-            np.random.seed(seed)
-            
-        self.pop_size = pop_size
-        self.N = self.pop_size
-        self.mu = max(2, self.N // 2)
-        
-        # Search boundaries
-        if bounds is not None:
-            if isinstance(bounds[0], (int, float)):
-                self.lb = torch.full((dim,), float(bounds[0]), device=self.device, dtype=torch.float32)
-                self.ub = torch.full((dim,), float(bounds[1]), device=self.device, dtype=torch.float32)
-            else:
-                self.lb = torch.as_tensor(bounds[0], device=self.device, dtype=torch.float32)
-                self.ub = torch.as_tensor(bounds[1], device=self.device, dtype=torch.float32)
-        else:
-            self.lb = torch.full((dim,), -5.0, device=self.device, dtype=torch.float32)
-            self.ub = torch.full((dim,), 5.0, device=self.device, dtype=torch.float32)
-            
-        # Distribution state variables: (m, sigma, C)
-        self.m = self.lb + torch.rand(dim, device=self.device) * (self.ub - self.lb)
-        self.sigma = 0.3 * torch.mean(self.ub - self.lb).item()
-        self.C = torch.eye(dim, device=self.device, dtype=torch.float32)
-        self.reg_ot = 0.05
-        
-        # --- First-Principles Canonical Invariants (Zero Empirical Magic Numbers) ---
-        # 1. Scale-invariant rank weights for top mu elites
-        raw_weights = torch.tensor([math.log(self.mu + 0.5) - math.log(i + 1) for i in range(self.mu)], device=self.device)
-        self.weights = raw_weights / raw_weights.sum()
-        self.mu_eff = float(1.0 / (self.weights ** 2).sum().item())
-        
-        # 2. Kinetic Flow-Path Step Adaptation (FP-CSA) constants
-        # Selection degrees of freedom over total degrees of freedom
-        self.c_sigma = self.mu_eff / (self.dim + self.mu_eff)
-        # Critical damping factor
-        self.d_sigma = 1.0 + self.c_sigma
-        # Expectation of Gaussian vector norm (Stirling asymptotic expansion of Gamma ratio)
-        self.chi_d = math.sqrt(self.dim) * (1.0 - 1.0 / (4.0 * self.dim) + 1.0 / (21.0 * self.dim ** 2))
-        self.p_sigma = torch.zeros(self.dim, device=self.device, dtype=torch.float32)
-        
-        # 3. Metric path and Riemannian manifold deformation constants
-        # Canonical harmonic timescale for directional displacement
-        self.c_c = 4.0 / (self.dim + 4.0)
-        self.p_c = torch.zeros(self.dim, device=self.device, dtype=torch.float32)
-        # Metric tensor learning rates on S++(D) manifold (dimension ~ D^2)
-        self.c_1 = 2.0 / (self.dim ** 2 + self.mu_eff)
-        self.c_mu = min(1.0 - self.c_1, 2.0 * self.mu_eff / (self.dim ** 2 + self.mu_eff))
-        
-        self.best_x = self.m.clone()
+
+        self.N = pop_size
+        self.mu = max(2, self.N // 2)             # 50% selection rate -> standard
+        self.lb, self.ub, self.span = _normalise_bounds(bounds, dim, self.device)
+
+        # --- Gaussian search state: p_0 = N(m, sigma^2 C), C = L L^T
+        self.m = self.lb + torch.rand(dim, device=self.device) * self.span
+        self.sigma = float(0.3 * self.span.mean().item())
+        self.L = torch.eye(dim, device=self.device)
+        self.p_sigma = torch.zeros(dim, device=self.device)
+
+        # --- First-principles invariants (no user choice possible)
+        self.w = _log_rank_weights(self.mu, self.device, torch.float32)
+        self.mu_eff   = float(1.0 / (self.w ** 2).sum().item())      # e.g. ~5 for N=30
+        self.c_sigma  = self.mu_eff / (self.dim + self.mu_eff)       # CSA learning rate
+        self.d_sigma  = 1.0 + self.c_sigma                            # canonical damping
+        self.alpha_C  = self.mu_eff / (self.dim ** 2 + self.mu_eff)  # cov learning rate
+        self.chi_D    = _chi_D(self.dim)                             # E[||N(0,I_D)||]
+
         self.best_f = float("inf")
-        self.history = []
+        self.best_x = self.m.clone()
+        self.history: list = []
 
-    def fold(self, x):
-        """Smooth periodic reflection boundary handling preserving sample variance."""
-        width = self.ub - self.lb
-        x_shifted = x - self.lb
-        x_mod = torch.remainder(x_shifted, 2.0 * width)
-        folded = torch.where(x_mod > width, 2.0 * width - x_mod, x_mod)
-        return self.lb + folded
+    # ------------------------- housekeeping ----------------------------- #
+    def fold(self, x: torch.Tensor) -> torch.Tensor:
+        """Smooth periodic reflection: samples always stay in [lb, ub]."""
+        w = self.span
+        s = (x - self.lb) % (2.0 * w)
+        return self.lb + torch.where(s > w, 2.0 * w - s, s)
 
-    def clamp(self, x):
-        """Domain projection."""
+    def clamp(self, x: torch.Tensor) -> torch.Tensor:
+        """Hard clamp for the mean (m is updated, x is reflected)."""
         return torch.clamp(x, min=self.lb, max=self.ub)
 
-    def optimize(self, objective_fn, max_iters=200, max_evals=None, verbose=False):
+    # ------------------------- one FM step ------------------------------ #
+    def step(self, f: Callable[[torch.Tensor], torch.Tensor], reg_ot: float
+             ) -> tuple[float, torch.Tensor]:
+        """ONE Flow Matching iteration.  Returns (best_f, best_x) after the step.
+
+        The body is nine lines, one per FM step in the docstring header.
         """
-        Execute continuous probability flow optimization.
+        D, N = self.dim, self.N
+        # 1) sample from current search Gaussian, fold to domain
+        z = torch.randn(N, D, device=self.device)
+        x = self.fold(self.m + self.sigma * (z @ self.L.t()))                       # x in dom
+        # 2) evaluate
+        fvals = f(x)
+        idx = torch.argsort(fvals)
+        elites = x[idx[: self.mu]]                                                   # (mu, D)
+        m_old = self.m
+        best_v, best_i = torch.min(fvals, dim=0)
+        if float(best_v.item()) < self.best_f:
+            self.best_f = float(best_v.item())
+            self.best_x = x[best_i].clone()
+
+        # 3) Sinkhorn OT between population and weighted elite support
+        Pi = sinkhorn_coupling(x, elites, self.w, reg=reg_ot)
+        # 4) barycentric FM target: "where each particle should be at time 1"
+        row = Pi.sum(dim=1, keepdim=True) + 1e-12
+        target = (Pi / row) @ elites                                                 # (N, D)
+        # 5) FM velocity: u = target - x  (closed-form constant in t)
+        u = target - x
+
+        # 6) mean probability-flow drift (Euler step of the marginal equation)
+        self.m = self.clamp(m_old + u.mean(dim=0))
+
+        # 7) Cumulative Step-Size Adaptation on the elite-mean path
+        ar = (elites - m_old) / self.sigma                                            # (mu, D)
+        z_w = math.sqrt(self.mu_eff) * (self.w.view(-1, 1) * ar).sum(dim=0)          # (D,)
+        self.p_sigma = (1.0 - self.c_sigma) * self.p_sigma + z_w
+        exp_arg = (self.c_sigma / self.d_sigma) * (float(self.p_sigma.norm())
+                                                  / self.chi_D - 1.0)
+        self.sigma = float(self.sigma * math.exp(max(-1.0, min(1.0, exp_arg))))
+        self.sigma = max(1e-30, min(self.sigma, 0.5 * float(self.span.mean())))
+
+        # 8) rank-mu covariance update (one scalar learning rate, alpha_C)
+        C_old = self.L @ self.L.t()
+        C_mu = (self.w.view(-1, 1) * ar).t() @ ar                                    # (D, D)
+        C = (1.0 - self.alpha_C) * C_old + self.alpha_C * C_mu
+        C = 0.5 * (C + C.t())
+        evals, evecs = torch.linalg.eigh(C)
+        evals = evals.clamp_min(1e-14)
+        self.L = evecs @ torch.diag(torch.sqrt(evals))
+
+        return self.best_f, self.best_x
+
+    # ------------------------- driver loop ------------------------------ #
+    def optimize(self, f: Callable[[torch.Tensor], torch.Tensor],
+                 max_iters: int = 200,
+                 eps_schedule: tuple[float, float] = (0.5, 1e-3)
+                 ) -> dict:
+        """Run ``max_iters`` FM steps with a linear entropic-temperature
+        schedule from ``eps_schedule[0]`` down to ``eps_schedule[1]``.
+
+        The epsilon schedule is dimensionless (medians) and uses no
+        problem-specific scale.
         """
-        if max_evals is not None:
-            max_iters = max(1, max_evals // self.pop_size)
-            
-        D = self.dim
-        N = self.N
-        
-        for iteration in range(1, max_iters + 1):
-            # 1. Canonical Entropic Schedule (Stochastic Interpolant noise schedule)
-            prog = (iteration - 1) / max(max_iters - 1, 1)
-            reg_t = 0.5 * (1.0 - prog) + 1e-5
-            
-            # 2. Spectral Decomposition of Riemannian Metric Tensor C_t
-            C_reg = 0.5 * (self.C + self.C.t()) + 1e-14 * torch.eye(D, device=self.device)
-            evals, evecs = torch.linalg.eigh(C_reg)
-            evals = torch.clamp(evals, min=1e-14)
-            B = evecs @ torch.diag(torch.sqrt(evals))
-            B_inv = torch.diag(1.0 / torch.sqrt(evals)) @ evecs.t()
-            
-            # 3. Continuous Probability Flow Sampling
-            z = torch.randn(N, D, device=self.device)
-            x_raw = self.m.unsqueeze(0) + self.sigma * torch.matmul(z, B.t())
-            x_samples = self.fold(x_raw)
-            
-            f_vals = objective_fn(x_samples)
-            
-            # Track best solution
-            min_val, min_idx = torch.min(f_vals, dim=0)
-            if min_val.item() < self.best_f:
-                self.best_f = float(min_val.item())
-                self.best_x = x_samples[min_idx].clone()
-            self.history.append((iteration, self.best_f))
-            
-            # 4. Scale-Invariant Gibbs Target Measure
-            sorted_idx = torch.argsort(f_vals)
-            full_weights = torch.zeros(N, device=self.device)
-            full_weights[sorted_idx[:self.mu]] = self.weights
-            full_weights = full_weights / full_weights.sum()
-            
-            # 5. Entropic Optimal Transport Trajectory Straightening
-            y_ot = sinkhorn_transport(x_samples, full_weights, reg=reg_t)
-            v_field = y_ot - x_samples
-            
-            # 6. Mean Flow Drift Integration
-            flow_displacement = v_field.mean(dim=0)
-            m_old = self.m.clone()
-            self.m = self.clamp(self.m + flow_displacement)
-            
-            # 7. Exact Flow-Path Step-Size Adaptation (FP-CSA)
-            delta_m_norm = (self.m - m_old) / (self.sigma + 1e-15)
-            z_flow = math.sqrt(self.mu_eff) * torch.matmul(B_inv, delta_m_norm)
-            
-            self.p_sigma = (1.0 - self.c_sigma) * self.p_sigma + math.sqrt(self.c_sigma * (2.0 - self.c_sigma)) * z_flow
-            norm_p_sigma = torch.norm(self.p_sigma).item()
-            
-            # Unbiased Step-Size Scaling
-            exp_arg = (self.c_sigma / self.d_sigma) * (norm_p_sigma / self.chi_d - 1.0)
-            exp_arg = max(-1.0, min(1.0, exp_arg))
-            self.sigma = self.sigma * math.exp(exp_arg)
-            self.sigma = max(1e-35, min(self.sigma, 0.5 * torch.mean(self.ub - self.lb).item()))
-            
-            # 8. Riemannian Metric Covariance Adaptation
-            hsig = float(norm_p_sigma / math.sqrt(1.0 - (1.0 - self.c_sigma) ** (2 * iteration)) / self.chi_d < (1.4 + 2.0 / (D + 1.0)))
-            self.p_c = (1.0 - self.c_c) * self.p_c + hsig * math.sqrt(self.c_c * (2.0 - self.c_c)) * math.sqrt(self.mu_eff) * delta_m_norm
-            delta_p = self.p_c.unsqueeze(1) @ self.p_c.unsqueeze(0)
-            
-            # Deform metric along OT elite displacements
-            norm_elites = (x_samples[sorted_idx[:self.mu]] - m_old.unsqueeze(0)) / (self.sigma + 1e-15)
-            C_mu = torch.matmul(norm_elites.t() * self.weights.unsqueeze(0), norm_elites)
-            
-            self.C = (1.0 - self.c_1 - self.c_mu) * self.C + self.c_1 * delta_p + self.c_mu * C_mu
-            self.C = 0.5 * (self.C + self.C.t())
-            
-            if verbose and (iteration % 25 == 0 or iteration == max_iters):
-                print(f"Iter {iteration:3d}/{max_iters} | Best f: {self.best_f:.6e} | sigma: {self.sigma:.2e}")
-                
+        eps_hi, eps_lo = eps_schedule
+        self.history = []
+        for t in range(max_iters):
+            prog = t / max(max_iters - 1, 1)
+            reg = eps_hi * (1.0 - prog) + eps_lo * prog
+            best_f, _ = self.step(f, reg)
+            self.history.append((t + 1, best_f))
         return {
-            "best_x": self.best_x.cpu().numpy(),
             "best_f": self.best_f,
+            "best_x": self.best_x.detach().cpu().numpy(),
             "iters": max_iters,
-            "history": self.history
+            "history": self.history,
         }
 
 
-# Aliases
-PureFlowOpt = FlowOpt
-sinkhorn_ot_fast = sinkhorn_transport
+# --------------------------------------------------------------------------- #
+#  Helpers                                                                     #
+# --------------------------------------------------------------------------- #
+
+def _normalise_bounds(bounds, dim: int, device):
+    lb, ub = bounds[0], bounds[1]
+    if isinstance(lb, (int, float)):
+        lb = torch.full((dim,), float(lb), device=device)
+    else:
+        lb = torch.as_tensor(lb, device=device, dtype=torch.float32)
+    if isinstance(ub, (int, float)):
+        ub = torch.full((dim,), float(ub), device=device)
+    else:
+        ub = torch.as_tensor(ub, device=device, dtype=torch.float32)
+    return lb, ub, ub - lb

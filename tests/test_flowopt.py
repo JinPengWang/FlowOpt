@@ -1,160 +1,161 @@
 """
-Unit Tests for FlowOpt: First-Principles Riemannian Flow Matching Optimizer.
-Verifies:
-1. Exact First-Principles Dimensional Invariants (No magic numbers)
-2. Null Hypothesis Flow-Path Variance Calibration (E[||p_sigma||] = chi_D)
-3. Boundary Folding Reflection Mechanics
-4. Deterministic Seed Reproducibility
-5. Quadratic Basin Fast Convergence (Sphere)
-6. Entropic Optimal Transport Coupling Integrity
+Unit tests for FlowOpt v2
+=========================
+
+1. First-principles invariants are recovered exactly
+   (c_sigma, d_sigma, alpha_C, chi_D, mu_eff all derived from D and N).
+2. CSA null-hypothesis: under random fitness the path norm ratio converges.
+   E[|| p_sigma ||] ≈ chi_D  (this is the "zero-drift" claim).
+3. Domain reflection is exact: fold is a true bijection inside [lb, ub].
+4. Deterministic reproducibility under fixed seeds.
+5. Sphere converges well within the budget.
+6. Sinkhorn coupling is doubly stochastic up to log-domain precision.
 """
 
+from __future__ import annotations
+
 import math
-import sys
 import os
-import torch
+import sys
+
 import numpy as np
+import torch
 
-# Ensure flowopt is importable
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 
-from flowopt.optimizer import FlowOpt
-from flowopt.benchmarks import get_benchmark
+from flowopt import FlowOpt, sinkhorn_coupling  # noqa: E402
+from flowopt.benchmarks import get_benchmark     # noqa: E402
 
+
+# -------------------- 1. invariants ---------------------------- #
 
 def test_first_principles_invariants():
-    """Verify all coefficients are derived strictly from dimension D and effective selection mass."""
-    dim = 10
-    opt = FlowOpt(dim=dim, pop_size=30, seed=42)
+    D, N = 10, 30
+    opt = FlowOpt(dim=D, pop_size=N, seed=42)
 
-    mu = 30 // 2
-    raw_w = torch.tensor([math.log(mu + 0.5) - math.log(i + 1) for i in range(mu)], dtype=torch.float32)
-    weights = raw_w / raw_w.sum()
-    mu_eff = float(1.0 / (weights ** 2).sum().item())
+    mu = N // 2
+    raw = torch.tensor([math.log(mu + 0.5) - math.log(i + 1) for i in range(mu)])
+    w = raw / raw.sum()
+    mu_eff = float(1.0 / (w ** 2).sum().item())
 
-    # Exact mathematical definitions
-    expected_c_sigma = mu_eff / (dim + mu_eff)
-    expected_d_sigma = 1.0 + expected_c_sigma
-    expected_c_c = 4.0 / (dim + 4.0)
-    expected_c_1 = 2.0 / (dim ** 2 + mu_eff)
-    expected_c_mu = min(1.0 - expected_c_1, 2.0 * mu_eff / (dim ** 2 + mu_eff))
-    expected_chi_d = math.sqrt(dim) * (1.0 - 1.0 / (4.0 * dim) + 1.0 / (21.0 * dim ** 2))
+    expected = {
+        "c_sigma": mu_eff / (D + mu_eff),
+        "d_sigma": 1.0 + mu_eff / (D + mu_eff),
+        "alpha_C": mu_eff / (D ** 2 + mu_eff),
+        "chi_D": math.sqrt(D) * (1.0 - 1.0 / (4.0 * D) + 1.0 / (32.0 * D * D)),
+        "mu_eff": mu_eff,
+    }
 
-    assert math.isclose(opt.c_sigma, expected_c_sigma, rel_tol=1e-5), "c_sigma mismatch"
-    assert math.isclose(opt.d_sigma, expected_d_sigma, rel_tol=1e-5), "d_sigma mismatch"
-    assert math.isclose(opt.c_c, expected_c_c, rel_tol=1e-5), "c_c mismatch"
-    assert math.isclose(opt.c_1, expected_c_1, rel_tol=1e-5), "c_1 mismatch"
-    assert math.isclose(opt.c_mu, expected_c_mu, rel_tol=1e-5), "c_mu mismatch"
-    assert math.isclose(opt.chi_d, expected_chi_d, rel_tol=1e-5), "chi_d mismatch"
+    for k, v in expected.items():
+        got = getattr(opt, k)
+        assert math.isclose(got, v, rel_tol=1e-6, abs_tol=1e-12), \
+            f"{k}: expected {v}, got {got}"
 
 
-def test_null_hypothesis_unbiasedness():
-    """
-    Under a pure flat random fitness landscape, the cumulative step-size flow path
-    must have an expected norm equal to chi_D, ensuring zero exponential drift.
-    """
-    dim = 10
-    torch.manual_seed(123)
-    opt = FlowOpt(dim=dim, pop_size=30, seed=123)
+# -------------------- 2. CSA null hypothesis ------------------- #
 
-    # Run for 200 generations under random fitness
+def test_csa_null_hypothesis():
+    """Under random fitness, the CSA path's expected norm equals chi_D."""
+    D, N = 8, 30
+    torch.manual_seed(0)
+    opt = FlowOpt(dim=D, pop_size=N, seed=0)
+
+    # Burn-in then measure |p_sigma|.  No objective ever feeds back into the
+    # path except via the random displacement vector z_w.
     norms = []
-    for gen in range(200):
-        # Generate random fitness values (pure noise, no signal)
-        x = opt.m + opt.sigma * torch.randn(opt.N, dim, device=opt.device)
-        random_fitness = torch.randn(opt.N).tolist()
-        
-        # Rank by random fitness
-        sorted_indices = np.argsort(random_fitness)
-        elites = x[sorted_indices[:opt.mu]]
-        
-        # Invariant flow step
-        z_k = (elites - opt.m) / opt.sigma
-        z_flow = math.sqrt(opt.mu_eff) * (opt.weights.unsqueeze(1) * z_k).sum(dim=0)
-        opt.p_sigma = (1.0 - opt.c_sigma) * opt.p_sigma + math.sqrt(opt.c_sigma * (2.0 - opt.c_sigma)) * z_flow
-        if gen > 50:  # Allow burn-in to stationary distribution
-            norms.append(opt.p_sigma.norm().item())
+    for gen in range(400):
+        x = opt.m + opt.sigma * torch.randn(N, D, device=opt.device)
+        random_fitness = torch.randn(N).tolist()
+        order = np.argsort(random_fitness)
+        elites = x[order[:opt.mu]]
+        ar = (elites - opt.m) / opt.sigma
+        z_w = math.sqrt(opt.mu_eff) * (opt.w.view(-1, 1) * ar).sum(dim=0)
+        opt.p_sigma = (1.0 - opt.c_sigma) * opt.p_sigma + z_w
+        if gen > 100:
+            norms.append(float(opt.p_sigma.norm().item()))
 
-    mean_norm = float(np.mean(norms))
-    # E[||p_sigma||] should be within 15% of chi_D
-    ratio = mean_norm / opt.chi_d
-    assert 0.85 <= ratio <= 1.15, f"Null hypothesis norm ratio {ratio:.3f} deviated significantly from 1.0"
+    ratio = float(np.mean(norms)) / opt.chi_D
+    assert 0.85 <= ratio <= 1.15, f"null-hypothesis ratio {ratio:.3f} deviated from 1"
 
 
-def test_boundary_folding():
-    """Verify that boundary folding reflects smoothly within [lb, ub]."""
-    dim = 5
-    opt = FlowOpt(dim=dim, bounds=(0.0, 10.0), seed=42)
+# -------------------- 3. periodic reflection ------------------- #
 
-    # Test values outside upper and lower bounds
-    test_x = torch.tensor([
-        [11.0, -1.0, 5.0, 22.0, -12.0],
-        [15.0, -5.0, 10.0, 0.0, 8.0]
-    ], device=opt.device, dtype=torch.float32)
-    folded = opt.fold(test_x)
-
-    # All folded values must be strictly within [lb, ub]
-    assert (folded >= opt.lb).all().item(), "Folded value below lower bound"
-    assert (folded <= opt.ub).all().item(), "Folded value above upper bound"
-    # Symmetric reflection checks
-    assert math.isclose(folded[0, 0].item(), 9.0), "11.0 on [0, 10] should fold to 9.0"
-    assert math.isclose(folded[0, 1].item(), 1.0), "-1.0 on [0, 10] should fold to 1.0"
-    assert math.isclose(folded[0, 2].item(), 5.0), "5.0 on [0, 10] should remain 5.0"
+def test_periodic_reflection():
+    D = 5
+    opt = FlowOpt(dim=D, bounds=(0.0, 10.0), pop_size=10, seed=42)
+    pts = torch.tensor(
+        [[11.0, -1.0, 5.0, 22.0, -12.0],
+         [15.0, -5.0, 10.0, 0.0, 8.0]],
+        device=opt.device, dtype=torch.float32,
+    )
+    folded = opt.fold(pts)
+    assert (folded >= opt.lb).all().item()
+    assert (folded <= opt.ub).all().item()
+    assert math.isclose(folded[0, 0].item(), 9.0)    # 11 -> 9
+    assert math.isclose(folded[0, 1].item(), 1.0)    # -1 -> 1
+    assert math.isclose(folded[0, 2].item(), 5.0)
 
 
-def test_deterministic_reproducibility():
-    """Verify that identical seeds produce bitwise identical optimization results."""
-    func = get_benchmark("sphere", dim=10)
+# -------------------- 4. deterministic reproduction ----------- #
 
-    opt1 = FlowOpt(dim=10, bounds=func.bounds, seed=999)
-    res1 = opt1.optimize(func, max_iters=50)
-
-    opt2 = FlowOpt(dim=10, bounds=func.bounds, seed=999)
-    res2 = opt2.optimize(func, max_iters=50)
-
-    assert np.allclose(res1["best_x"], res2["best_x"]), "Optimizers with identical seeds produced different solution vectors"
-    assert math.isclose(res1["best_f"], res2["best_f"], abs_tol=1e-12), "Optimizers with identical seeds produced different fitness"
+def test_deterministic_reproduction():
+    f = get_benchmark("sphere", dim=10)
+    r1 = FlowOpt(dim=10, bounds=f.bounds, seed=999).optimize(f, max_iters=50)
+    r2 = FlowOpt(dim=10, bounds=f.bounds, seed=999).optimize(f, max_iters=50)
+    assert np.allclose(r1["best_x"], r2["best_x"])
+    assert math.isclose(r1["best_f"], r2["best_f"], abs_tol=1e-12)
 
 
-def test_sphere_quadratic_convergence():
-    """Verify that FlowOpt achieves near-machine-precision zero on unimodal Sphere in 200 iterations."""
-    func = get_benchmark("sphere", dim=10)
-    opt = FlowOpt(dim=10, bounds=func.bounds, seed=42)
-    res = opt.optimize(func, max_iters=200)
+# -------------------- 5. Sphere convergence -------------------- #
 
-    assert res["best_f"] < 1e-10, f"Sphere convergence failed to reach < 1e-10, got {res['best_f']}"
+def test_sphere_convergence():
+    f = get_benchmark("sphere", dim=10)
+    res = FlowOpt(dim=10, bounds=f.bounds, seed=42).optimize(f, max_iters=200)
+    assert res["best_f"] < 1e-10, f"Sphere failed: best_f = {res['best_f']}"
 
 
-def test_sinkhorn_transport_mass_conservation():
-    """Verify that Sinkhorn entropic transport preserves marginal probability conservation."""
-    from flowopt.optimizer import sinkhorn_transport
-    dim = 5
-    N = 20
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    x = torch.randn(N, dim, device=device)
-    weights = torch.zeros(N, device=device)
-    weights[:10] = torch.softmax(torch.randn(10, device=device), dim=0)
+# -------------------- 6. Sinkhorn coupling --------------------- #
 
-    dest = sinkhorn_transport(x, weights, reg=0.1)
-    
-    # Destination should have matching shape and finite values
-    assert dest.shape == x.shape
-    assert not torch.isnan(dest).any()
-    assert not torch.isinf(dest).any()
+def test_sinkhorn_marginals():
+    D, N = 5, 20
+    torch.manual_seed(7)
+    x = torch.randn(N, D)
+    w = torch.zeros(N)
+    w[:10] = torch.softmax(torch.randn(10), dim=0)
+
+    Pi = sinkhorn_coupling(x, x, w, reg=0.05)
+    row_sum = Pi.sum(dim=1)
+    col_sum = Pi.sum(dim=0)
+    target_q = w / w.sum()
+    # source marginal is 1/N by construction
+    assert torch.allclose(row_sum, torch.full_like(row_sum, 1.0 / N), atol=5e-3)
+    assert torch.allclose(col_sum, target_q, atol=5e-3)
+
+
+# -------------------- driver ----------------------------------- #
+
+def _run_all() -> list[tuple[str, bool, str]]:
+    tests = [v for k, v in globals().items() if k.startswith("test_") and callable(v)]
+    out = []
+    for t in tests:
+        try:
+            t()
+            out.append((t.__name__, True, ""))
+        except AssertionError as e:
+            out.append((t.__name__, False, str(e)))
+        except Exception as e:
+            out.append((t.__name__, False, f"{type(e).__name__}: {e}"))
+    return out
 
 
 if __name__ == "__main__":
-    tests = [
-        test_first_principles_invariants,
-        test_null_hypothesis_unbiasedness,
-        test_boundary_folding,
-        test_deterministic_reproducibility,
-        test_sphere_quadratic_convergence,
-        test_sinkhorn_transport_mass_conservation,
-    ]
-    print(f"Running {len(tests)} unit tests for FlowOpt...")
-    for t in tests:
-        print(f"  [RUNNING] {t.__name__} ...", end="", flush=True)
-        t()
-        print(" [PASSED]")
-    print(f"All {len(tests)} tests passed successfully!")
+    results = _run_all()
+    width = max(len(n) for n, _, _ in results)
+    for name, ok, msg in results:
+        flag = "[PASS]" if ok else "[FAIL]"
+        print(f"  {flag}  {name:<{width}}  {msg}")
+    failed = sum(1 for _, ok, _ in results if not ok)
+    print(f"\n{len(results) - failed} / {len(results)} passed")
+    if failed:
+        sys.exit(1)

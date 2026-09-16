@@ -30,6 +30,7 @@ wheels/
 env/
 venv/
 ENV/
+flowopt-env/
 
 # IDE files
 .idea/
