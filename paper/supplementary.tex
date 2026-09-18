@@ -116,7 +116,7 @@ z_{\text{flow}} \sim \mathcal{N}(0, I_D)
 Consequently, the expected norm of the cumulative flow path $p_\sigma$ in the stationary state is:
 \begin{align}
 \mathbb{E}[\|p_\sigma\|] &= \chi_D \equiv \sqrt{2} \frac{\Gamma((D+1)/2)}{\Gamma(D/2)} \nonumber \\
-&= \sqrt{D} \left(1 - \frac{1}{4D} + \frac{1}{21D^2} + \mathcal{O}(D^{-3})\right)
+&= \sqrt{D} \left(1 - \frac{1}{4D} + \frac{1}{32D^2} + \mathcal{O}(D^{-3})\right)
 \end{align}
 guaranteeing an unbiased step-size adaptation drift:
 \begin{equation}
@@ -151,7 +151,7 @@ Applying Stirling's asymptotic expansion of the Gamma ratio:
 \end{equation}
 Setting $x = D/2$:
 \begin{equation}
-\chi_D = \sqrt{2} \sqrt{\frac{D}{2}} \left(1 - \frac{1}{4D} + \frac{1}{21D^2} + \mathcal{O}(D^{-3})\right)
+\chi_D = \sqrt{2} \sqrt{\frac{D}{2}} \left(1 - \frac{1}{4D} + \frac{1}{32D^2} + \mathcal{O}(D^{-3})\right)
 \end{equation}
 Under the log-step-size update rule:
 \begin{equation}

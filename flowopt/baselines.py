@@ -195,7 +195,7 @@ class CBOOptimizer(BaseOptimizer):
     Consensus-Based Optimization (CBO) (Carrillo et al., 2018)
     Anisotropic SDE particle system with Gibbs consensus drift.
     """
-    def __init__(self, dim, bounds, pop_size=30, alpha=5.0, sigma=0.4, dt=0.1, seed=None):
+    def __init__(self, dim, bounds, pop_size=30, alpha=50.0, sigma=0.4, dt=0.1, seed=None):
         super().__init__(dim, bounds, pop_size, seed)
         self.alpha = alpha
         self.sigma = sigma
@@ -248,7 +248,7 @@ class CEMOptimizer(BaseOptimizer):
     Cross-Entropy Method (CEM) (Rubinstein & Kroese, 2004)
     Distribution fitting with canonical memory smoothing.
     """
-    def __init__(self, dim, bounds, pop_size=30, elite_ratio=0.2, alpha_smooth=0.8, seed=None):
+    def __init__(self, dim, bounds, pop_size=30, elite_ratio=0.2, alpha_smooth=0.7, seed=None):
         super().__init__(dim, bounds, pop_size, seed)
         self.n_elite = max(2, int(pop_size * elite_ratio))
         self.alpha_smooth = alpha_smooth

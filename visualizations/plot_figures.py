@@ -78,7 +78,7 @@ def fig1_flow_trajectory():
     fig, ax = plt.subplots(figsize=(6.4, 4.4))
     cf = ax.contourf(GX, GY, np.log10(GZ + 1.0), levels=24, cmap="viridis_r", alpha=0.85)
     fig.colorbar(cf, ax=ax, fraction=0.045, pad=0.025,
-                 label=r"$\log_{10}\bigl(f(x_1,x_2)+1\bigr)$")
+                 label=r"$\log_{10}(f(x_1,x_2)+1)$")
     ax.plot(traj[:, 0], traj[:, 1], color="white", lw=1.4, alpha=0.7)
     ax.plot(traj[:, 0], traj[:, 1], color="#D62728", lw=2.2, label="Flow mean path")
     ax.scatter(traj[0, 0], traj[0, 1], s=85, color="#FFA500",
@@ -177,7 +177,8 @@ def fig3_csa_null_hypothesis():
         elites = x[order[: opt.mu]]
         ar = (elites - opt.m) / opt.sigma
         z_w = math.sqrt(opt.mu_eff) * (opt.w.view(-1, 1) * ar).sum(dim=0)
-        opt.p_sigma = (1.0 - opt.c_sigma) * opt.p_sigma + z_w
+        _sqrt_cs = math.sqrt(opt.c_sigma * (2.0 - opt.c_sigma))
+        opt.p_sigma = (1.0 - opt.c_sigma) * opt.p_sigma + _sqrt_cs * z_w
         if gen >= burn:
             norms.append(float(opt.p_sigma.norm().item()))
 
@@ -237,8 +238,9 @@ def fig4_sinkhorn_coupling():
     for i in range(Pi.shape[0]):
         for j in range(Pi.shape[1]):
             if Pi[i, j] > 0.02:
+                alpha_val = min(1.0, max(0.0, float(Pi[i, j] * 6)))
                 ax.plot([src[i, 0], tgt[j, 0]], [src[i, 1], tgt[j, 1]],
-                        color="gray", alpha=float(Pi[i, j] * 6), lw=1.2)
+                        color="gray", alpha=alpha_val, lw=1.2)
     ax.set_xlim(-0.4, 2.4)
     ax.set_ylim(-0.4, 1.4)
     ax.set_title("edges weighted by $\\Pi^*$")

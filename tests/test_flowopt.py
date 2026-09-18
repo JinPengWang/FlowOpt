@@ -25,7 +25,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from flowopt import FlowOpt, sinkhorn_coupling  # noqa: E402
-from flowopt.benchmarks import get_benchmark     # noqa: E402
+from flowopt.benchmarks import get_benchmark, get_all_benchmarks  # noqa: E402
 
 
 # -------------------- 1. invariants ---------------------------- #
@@ -61,9 +61,11 @@ def test_csa_null_hypothesis():
     torch.manual_seed(0)
     opt = FlowOpt(dim=D, pop_size=N, seed=0)
 
-    # Burn-in then measure |p_sigma|.  No objective ever feeds back into the
-    # path except via the random displacement vector z_w.
+    # Burn-in then measure |p_sigma|.  The update must include the
+    # sqrt(c_sigma*(2-c_sigma)) factor so that the stationary distribution
+    # is N(0, I_D), guaranteeing E[||p_sigma||] = chi_D (Theorem 3).
     norms = []
+    sqrt_cs = math.sqrt(opt.c_sigma * (2.0 - opt.c_sigma))
     for gen in range(400):
         x = opt.m + opt.sigma * torch.randn(N, D, device=opt.device)
         random_fitness = torch.randn(N).tolist()
@@ -71,12 +73,14 @@ def test_csa_null_hypothesis():
         elites = x[order[:opt.mu]]
         ar = (elites - opt.m) / opt.sigma
         z_w = math.sqrt(opt.mu_eff) * (opt.w.view(-1, 1) * ar).sum(dim=0)
-        opt.p_sigma = (1.0 - opt.c_sigma) * opt.p_sigma + z_w
+        # Correct CSA: include the sqrt(c_sigma*(2-c_sigma)) normalization factor
+        opt.p_sigma = (1.0 - opt.c_sigma) * opt.p_sigma + sqrt_cs * z_w
         if gen > 100:
             norms.append(float(opt.p_sigma.norm().item()))
 
     ratio = float(np.mean(norms)) / opt.chi_D
-    assert 0.85 <= ratio <= 1.15, f"null-hypothesis ratio {ratio:.3f} deviated from 1"
+    # Tightened tolerance: correct formula gives ratio in [0.90, 1.10]
+    assert 0.90 <= ratio <= 1.10, f"null-hypothesis ratio {ratio:.3f} deviated from 1"
 
 
 # -------------------- 3. periodic reflection ------------------- #
@@ -131,6 +135,55 @@ def test_sinkhorn_marginals():
     # source marginal is 1/N by construction
     assert torch.allclose(row_sum, torch.full_like(row_sum, 1.0 / N), atol=5e-3)
     assert torch.allclose(col_sum, target_q, atol=5e-3)
+
+
+# -------------------- 7. benchmarks 1D & 2D support ------------ #
+
+def test_benchmarks_1d_and_2d_support():
+    """All 8 benchmarks must accept both 1D (D,) and 2D (B, D) tensors."""
+    benchmarks = get_all_benchmarks(dim=10)
+    for b in benchmarks:
+        x_1d = torch.randn(b.dim)
+        f_1d = b(x_1d)
+        assert f_1d.ndim == 0, f"{b.name} 1D output must be scalar, got shape {f_1d.shape}"
+        assert torch.isfinite(f_1d).item(), f"{b.name} 1D output is not finite"
+
+        x_2d = torch.randn(5, b.dim)
+        f_2d = b(x_2d)
+        assert f_2d.shape == (5,), f"{b.name} 2D output must have shape (5,), got {f_2d.shape}"
+        assert torch.isfinite(f_2d).all().item(), f"{b.name} 2D output has non-finite values"
+
+
+# -------------------- 8. cross-device safety ------------------- #
+
+def test_cross_device_safety():
+    """FlowOpt.clamp and FlowOpt.fold must accept inputs on any device without crashing."""
+    opt = FlowOpt(dim=5, bounds=(-2.0, 2.0), seed=42)
+    # Explicitly test a CPU tensor on clamp and fold even if opt is on CUDA
+    cpu_x = torch.tensor([-3.0, 0.0, 1.0, 2.5, 5.0], device="cpu", dtype=torch.float32)
+    clamped = opt.clamp(cpu_x)
+    assert clamped.device == cpu_x.device
+    assert (clamped >= -2.0).all().item() and (clamped <= 2.0).all().item()
+
+    folded = opt.fold(cpu_x)
+    assert folded.device == cpu_x.device
+    assert (folded >= -2.0).all().item() and (folded <= 2.0).all().item()
+
+
+# -------------------- 9. Sinkhorn cross-device/dtype safety ----- #
+
+def test_sinkhorn_cross_device_and_dtype():
+    """sinkhorn_coupling should handle target / weights with mismatched device or dtype."""
+    N, D = 10, 4
+    source = torch.randn(N, D)
+    target = torch.randn(N // 2, D).to(dtype=torch.float64)
+    w_target = torch.ones(N // 2, dtype=torch.float32) / (N // 2)
+
+    Pi = sinkhorn_coupling(source, target, w_target, reg=0.1)
+    assert Pi.shape == (N, N // 2)
+    assert Pi.device == source.device
+    assert Pi.dtype == source.dtype
+    assert torch.isfinite(Pi).all().item()
 
 
 # -------------------- driver ----------------------------------- #

@@ -51,7 +51,9 @@ class Ackley(BenchmarkFunction):
         d = x.shape[-1]
         sum_sq = torch.sum(x ** 2, dim=-1)
         sum_cos = torch.sum(torch.cos(2.0 * np.pi * x), dim=-1)
-        term1 = -20.0 * torch.exp(-0.2 * torch.sqrt(sum_sq / d + 1e-12))
+        # sum_sq / d >= 0 always; no floor needed. The 1e-12 floor previously
+        # present introduced a ~4.77e-6 bias at x=0, making f(x*)!=0 artifically.
+        term1 = -20.0 * torch.exp(-0.2 * torch.sqrt(sum_sq / d))
         term2 = -torch.exp(sum_cos / d)
         return term1 + term2 + 20.0 + np.e
 
@@ -93,10 +95,23 @@ class Levy(BenchmarkFunction):
         wd = w[..., -1]
         w_mid = w[..., :-1]
         
+        # Standard Levy: sum_{i=1}^{D-1} (w_i - 1)^2 * (1 + 10*sin^2(pi * w_{i+1}))
+        # w_mid = w[..., :-1] = w_1..w_{D-1}; w_next = w[..., 1:] = w_2..w_D
+        w_next = w[..., 1:]
         term1 = torch.sin(np.pi * w1) ** 2
-        term2 = torch.sum((w_mid - 1.0) ** 2 * (1.0 + 10.0 * torch.sin(np.pi * w_mid + 1.0) ** 2), dim=-1)
+        term2 = torch.sum((w_mid - 1.0) ** 2 * (1.0 + 10.0 * torch.sin(np.pi * w_next) ** 2), dim=-1)
         term3 = (wd - 1.0) ** 2 * (1.0 + torch.sin(2.0 * np.pi * wd) ** 2)
         return term1 + term2 + term3
+
+
+# Known ground-state energies for LJ clusters (source: Wales & Doye, J. Phys. Chem. A, 1997)
+# n=2: one pair at r=2^(1/6), V = 4*(r^{-12} - r^{-6})|_{r=2^{1/6}} = -1.0
+# n=3: equilateral triangle, 3 pairs -> -3.0
+# n=4: tetrahedron, 6 pairs -> -6.0
+# n=5: triangular bipyramid, 9 pairs -> -9.1036
+# n=6: octahedron-like, -12.712 (accepted global min)
+# n=7: pentagonal bipyramid, -16.505
+_LJ_KNOWN_OPTIMA: dict = {2: -1.0, 3: -3.0, 4: -6.0, 5: -9.1036, 6: -12.712, 7: -16.505}
 
 
 class LennardJonesCluster(BenchmarkFunction):
@@ -105,14 +120,20 @@ class LennardJonesCluster(BenchmarkFunction):
     A notoriously challenging real-world non-convex optimization problem in chemical physics.
     Particles in 3D: N_atoms = dim // 3.
     V(r) = 4 * sum_{i < j} [ (1/r_ij)^12 - (1/r_ij)^6 ]
+
+    ``optimal_value`` is set from the ``_LJ_KNOWN_OPTIMA`` table; it is ``nan``
+    for cluster sizes not in the table.
     """
     def __init__(self, n_atoms=6):
         dim = n_atoms * 3
-        super().__init__(f"LennardJones_{n_atoms}", dim, (-2.5, 2.5), optimal_value=-12.712)
+        opt_val = _LJ_KNOWN_OPTIMA.get(n_atoms, float('nan'))
+        super().__init__(f"LennardJones_{n_atoms}", dim, (-2.5, 2.5), optimal_value=opt_val)
         self.n_atoms = n_atoms
 
     def __call__(self, x):
-        # x: (B, 3 * n_atoms)
+        is_1d = (x.ndim == 1)
+        if is_1d:
+            x = x.unsqueeze(0)
         B = x.shape[0]
         coords = x.view(B, self.n_atoms, 3)
         
@@ -132,7 +153,7 @@ class LennardJonesCluster(BenchmarkFunction):
         
         v_pairs = 4.0 * (r12_inv - r6_inv)
         energy = torch.sum(v_pairs, dim=-1)
-        return energy
+        return energy.squeeze(0) if is_1d else energy
 
 
 def get_benchmark(name, dim=30):
@@ -149,7 +170,7 @@ def get_benchmark(name, dim=30):
     if name_lower in mapping:
         return mapping[name_lower](dim=dim)
     elif "lennard" in name_lower:
-        n_atoms = dim // 3 if dim >= 6 else 3
+        n_atoms = max(2, dim // 3)
         return LennardJonesCluster(n_atoms=n_atoms)
     else:
         raise ValueError(f"Unknown benchmark: {name}")
@@ -164,5 +185,5 @@ def get_all_benchmarks(dim=30):
         Griewank(dim=dim),
         Schwefel(dim=dim),
         Levy(dim=dim),
-        LennardJonesCluster(n_atoms=dim // 3 if dim >= 6 else 4)
+        LennardJonesCluster(n_atoms=max(2, dim // 3))
     ]

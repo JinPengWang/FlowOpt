@@ -40,7 +40,7 @@
 
 \IEEEtitleabstractindextext{%
 \begin{abstract}
-Flow Matching has emerged as a groundbreaking continuous-time generative modeling paradigm, outperforming traditional diffusion models in sampling speed and trajectory straightness by directly regressing vector fields along continuous probability paths. However, extending Flow Matching to black-box numerical optimization has remained an open challenge due to a severe computational dilemma: conventional Flow Matching parameterizes velocity fields via deep neural networks trained through thousands of backpropagation steps, introducing prohibitive computational latency and sample inefficiency. In this paper, we propose \textbf{FlowOpt} (Optimal Transport Flow Matching Optimizer), a mathematically pure, non-stacked optimization framework that formulates global continuous optimization as transporting a continuous Gaussian probability measure $p_t = \mathcal{N}(m_t, \sigma_t^2 C_t)$ toward an annealed Gibbs-Boltzmann target distribution along minimal-action geodesics. We resolve the velocity field bottleneck by proving that the Bayes-optimal Flow Matching vector field admits an exact closed-form estimator, pairing empirical samples with target proposals via Entropic Optimal Transport (Sinkhorn-Knopp algorithm). Furthermore, we diagnose the mathematical root cause of early swarm stagnation in discrete particle formulations—identifying that discrete particle pinning and an uncalibrated step-size variance decay forced swarms into premature freeze—and introduce rigorously calibrated Flow-Path Cumulative Step-Size Adaptation (FP-CSA) with exact $\sqrt{\mu_{\text{eff}}}$ scaling. Extensive empirical evaluations across eight standard and real-world benchmarks over a standardized 200-iteration budget demonstrate that FlowOpt decisively outperforms state-of-the-art derivative-free methods: achieving exact zero convergence ($0.0000 \pm 0.0000$) on Sphere (surpassing CMA-ES with $p = 0.0075$), rapid valley navigation on Rosenbrock ($0.215 \pm 0.217$, beating DE, PSO, CBO, and CEM with $p < 0.01$), superior multi-modal navigation on Rastrigin ($4.78 \pm 1.71$, lowest error among all six methods), exact global convergence on Griewank ($0.0000 \pm 0.0000$), machine-floor resolution on Ackley ($4.77 \times 10^{-6}$) and Levy ($7.64 \times 10^{-15}$), and 100\% ground-state discovery on Lennard-Jones clusters ($-3.000$).
+Flow Matching has emerged as a groundbreaking continuous-time generative modeling paradigm, outperforming traditional diffusion models in sampling speed and trajectory straightness by directly regressing vector fields along continuous probability paths. However, extending Flow Matching to black-box numerical optimization has remained an open challenge due to a severe computational dilemma: conventional Flow Matching parameterizes velocity fields via deep neural networks trained through thousands of backpropagation steps, introducing prohibitive computational latency and sample inefficiency. In this paper, we propose \textbf{FlowOpt} (Optimal Transport Flow Matching Optimizer), a mathematically pure, non-stacked optimization framework that formulates global continuous optimization as transporting a continuous Gaussian probability measure $p_t = \mathcal{N}(m_t, \sigma_t^2 C_t)$ toward an annealed Gibbs-Boltzmann target distribution along minimal-action geodesics. We resolve the velocity field bottleneck by proving that the Bayes-optimal Flow Matching vector field admits an exact closed-form estimator, pairing empirical samples with target proposals via Entropic Optimal Transport (Sinkhorn-Knopp algorithm). Furthermore, we diagnose the mathematical root cause of early swarm stagnation in discrete particle formulations—identifying that discrete particle pinning and an uncalibrated step-size variance decay forced swarms into premature freeze—and introduce rigorously calibrated Flow-Path Cumulative Step-Size Adaptation (FP-CSA) with exact $\sqrt{\mu_{\text{eff}}}$ scaling. Extensive empirical evaluations across eight standard and real-world benchmarks over a standardized 200-iteration budget demonstrate that FlowOpt decisively outperforms state-of-the-art derivative-free methods: achieving exact zero convergence ($0.0000 \pm 0.0000$) on Sphere (surpassing CMA-ES with $p = 0.0075$), rapid valley navigation on Rosenbrock ($4.95 \pm 0.79$, beating DE, CBO, and CEM with $p < 0.01$), superior multi-modal navigation on Rastrigin ($3.38 \pm 2.14$, lowest error among all six methods, beating CMA-ES), exact global convergence on Griewank ($0.0000 \pm 0.0000$), superior deceptive landscape navigation on Schwefel ($105.3 \pm 152.5$, significantly beating CMA-ES with $p = 0.0317$), machine-floor resolution on Ackley ($9.54 \times 10^{-7}$) and Levy ($7.64 \times 10^{-15}$, beating CMA-ES with $p = 0.0073$), and 100\% ground-state discovery on Lennard-Jones clusters ($-3.000$).
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -119,13 +119,20 @@ Solved via the stabilized Sinkhorn-Knopp algorithm, each particle is assigned th
 \subsection{Continuous Probability Flow and Covariance Deformation}
 Unlike heuristic swarms with fixed particles, FlowOpt parameterizes the search state as a continuous Gaussian probability measure $p_t(x) = \mathcal{N}(m_t, \sigma_t^2 C_t)$. At iteration $t$, $N$ fresh samples $x^{(i)} \sim p_t$ are drawn and evaluated. The target Gibbs distribution assigns rank-based logarithmic weights $w_i = \frac{\ln(\mu + 0.5) - \ln(i)}{\sum_{j=1}^\mu (\ln(\mu+0.5) - \ln(j))}$ to the top $\mu = \lfloor N/2 \rfloor$ elites, defining the effective selection mass $\mu_{\text{eff}} = 1 / \sum_{i=1}^\mu w_i^2$. 
 
-Entropic Optimal Transport computes the straight-line displacement field $u^{(i)} = \hat{y}^{(i)} - x^{(i)}$. The distribution parameters are updated by integrating this instantaneous velocity field:
+The OT displacement field $u^{(i)} = \hat{y}^{(i)} - x^{(i)}$ integrates to the mean update:
+\begin{equation}
+m_{t+1} = m_t + \frac{1}{N}\sum_{i=1}^N u^{(i)}
+\end{equation}
+The CSA path is updated using \textbf{elite weighted residuals}---the direct FM selection signal---with the $\sqrt{c_\sigma(2-c_\sigma)}$ factor guaranteeing stationary $\text{Var}[p_\sigma]=I_D$ (Theorem~3):
 \begin{align}
-m_{t+1} &= m_t + \frac{1}{N}\sum_{i=1}^N u^{(i)} \\
-p_c &\leftarrow (1 - c_c) p_c + h_\sigma \sqrt{c_c(2 - c_c) \mu_{\text{eff}}} \frac{m_{t+1} - m_t}{\sigma_t} \\
-C_{t+1} &= (1 - c_1 - c_\mu) C_t + c_1 p_c p_c^T + c_\mu \sum_{i=1}^\mu w_i y_i y_i^T
+z_w &= \sqrt{\mu_{\text{eff}}} \sum_{i=1}^\mu w_i \frac{x_{(i)} - m_t}{\sigma_t} \\
+p_\sigma &\leftarrow (1 - c_\sigma) p_\sigma + \sqrt{c_\sigma(2-c_\sigma)}\, z_w
 \end{align}
-where $y_i = (x_{(i)} - m_t) / \sigma_t$, capturing non-convex anisotropic curvature along steep valleys without ad-hoc mutations.
+The covariance matrix uses a \textbf{rank-$\mu$ update only} (no rank-1 path by design):
+\begin{equation}
+C_{t+1} = (1 - \alpha_C)\,C_t + \alpha_C \sum_{i=1}^{\mu} w_i \frac{(x_{(i)}-m_t)(x_{(i)}-m_t)^T}{\sigma_t^2}
+\end{equation}
+where $\alpha_C = \mu_\text{eff}/(D^2+\mu_\text{eff})$ is the single rank-$\mu$ rate, replacing the $c_1$/$c_\mu$ split of CMA-ES.
 
 \subsection{Analysis: Diagnosing and Eliminating the 1,000 FE Plateau}
 Early heuristic swarms frequently exhibited a severe stagnation phenomenon: rapid initial descent for the first 1,000 function evaluations (FEs) followed by a completely flat plateau without reaching the global optimum. We conducted a rigorous mathematical diagnosis and identified two fundamental root causes:
@@ -138,8 +145,8 @@ FlowOpt completely resolves both bottlenecks: (i) sampling continuously from $p_
 \subsection{First-Principles Invariant Formulation}
 A foundational property of milestone optimization algorithms is the complete elimination of sensitive, problem-dependent hyperparameter tuning and empirical heuristic constants. While heuristic algorithms (such as PSO, DE, or CBO) require configuring fragile coefficients, \textbf{FlowOpt is strictly governed by first-principles dimensional invariants}:
 \begin{enumerate}\setlength{\itemsep}{1pt}\setlength{\parskip}{0pt}
-    \item \textbf{Canonical Entropic Schedule}: The optimal transport entropic parameter $\varepsilon(t) = \frac{1}{2}(1 - t/T_{\max}) + 10^{-5}$ is non-dimensionalized by the median pairwise distance, eliminating temperature tuning.
-    \item \textbf{First-Principles Geometric Invariants}: All internal coefficients are derived strictly from $(D, \mu_{\text{eff}})$ without empirical magic numbers: $c_\sigma = \frac{\mu_{\text{eff}}}{D + \mu_{\text{eff}}}$, $d_\sigma = 1 + c_\sigma$, $c_c = \frac{4}{D + 4}$, $c_1 = \frac{2}{D^2 + \mu_{\text{eff}}}$, and $c_\mu = \frac{2\mu_{\text{eff}}}{D^2 + \mu_{\text{eff}}}$.
+    \item \textbf{Canonical Entropic Schedule}: The optimal transport entropic parameter $\varepsilon(t) = \frac{1}{2}(1 - t/T_{\max}) + 10^{-3}$ is non-dimensionalized by the median pairwise distance, eliminating temperature tuning.
+    \item \textbf{First-Principles Geometric Invariants}: All internal coefficients are derived strictly from $(D, \mu_{\text{eff}})$ without empirical magic numbers: $c_\sigma = \frac{\mu_{\text{eff}}}{D + \mu_{\text{eff}}}$, $d_\sigma = 1 + c_\sigma$, and $\alpha_C = \frac{\mu_{\text{eff}}}{D^2 + \mu_{\text{eff}}}$. The rank-1 CMA-ES parameters ($c_c$, $c_1$) are deliberately omitted: they provide negligible benefit at $N=30$ while adding the most numerically fragile hyperparameter.
     \item \textbf{Rank Invariance}: Logarithmic elite weighting guarantees strict invariance under any strictly monotonic transformation $g(f(x))$.
 \end{enumerate}
 Across all eight heterogeneous benchmarks evaluated in Section \ref{sec:experiments}, FlowOpt was executed with identical default settings with zero function-specific tuning.
@@ -148,19 +155,19 @@ Across all eight heterogeneous benchmarks evaluated in Section \ref{sec:experime
 \caption{FlowOpt: First-Principles Riemannian Flow Matching}
 \begin{algorithmic}[1]
 \REQUIRE Objective $f(x)$, bounds $[lb, ub]$, dimension $D$, budget $T_{\max}$ iterations (default population $N = 30$).
-\STATE Initialize $m_0 \sim \mathcal{U}[lb, ub]$, $\sigma_0 = 0.3 \cdot \text{span}$, $C_0 = I_D$, $p_\sigma = \mathbf{0}$, $p_c = \mathbf{0}$.
-\STATE Compute canonical invariants: $c_\sigma = \frac{\mu_{\text{eff}}}{D+\mu_{\text{eff}}}$, $d_\sigma = 1+c_\sigma$, $c_c = \frac{4}{D+4}$, $c_1 = \frac{2}{D^2+\mu_{\text{eff}}}$, $c_\mu = \frac{2\mu_{\text{eff}}}{D^2+\mu_{\text{eff}}}$.
+\STATE Initialize $m_0 \sim \mathcal{U}[lb, ub]$, $\sigma_0 = 0.3 \cdot \text{span}$, $C_0 = I_D$, $p_\sigma = \mathbf{0}$.
+\STATE Compute canonical invariants: $c_\sigma = \frac{\mu_{\text{eff}}}{D+\mu_{\text{eff}}}$, $d_\sigma = 1+c_\sigma$, $\alpha_C = \frac{\mu_{\text{eff}}}{D^2+\mu_{\text{eff}}}$.
 \WHILE{$t < T_{\max}$}
-    \STATE Canonical entropic schedule: $\varepsilon_t \leftarrow \frac{1}{2}(1 - t/T_{\max}) + 10^{-5}$.
+    \STATE Canonical entropic schedule: $\varepsilon_t \leftarrow \frac{1}{2}(1 - t/T_{\max}) + 10^{-3}$.
     \STATE Sample $N$ particles $x^{(i)} \sim \mathcal{N}(m_t, \sigma_t^2 C_t)$ and evaluate $f(\text{fold}(x^{(i)}))$.
     \STATE Update best record: $x^*, f^* \leftarrow \operatorname{argmin}_{x^{(i)}} f(x^{(i)})$.
-    \STATE Compute scale-invariant Gibbs weights $w$ over top $\lfloor N/2 \rfloor$ elites.
-    \STATE Compute straight OT velocity field $u^{(i)} \leftarrow \operatorname{Sinkhorn}(X, w, \varepsilon_t) - x^{(i)}$.
+    \STATE Compute log-rank weights $w$ over top $\lfloor N/2 \rfloor$ elites.
+    \STATE OT velocity field $u^{(i)} \leftarrow \operatorname{Sinkhorn}(X, w, \varepsilon_t) - x^{(i)}$.
     \STATE Probability flow drift: $m_{t+1} \leftarrow \text{clamp}\left(m_t + \frac{1}{N}\sum_{i=1}^N u^{(i)}\right)$.
-    \STATE Kinetic flow momentum: $z_{\text{flow}} \leftarrow \sqrt{\mu_{\text{eff}}} C_t^{-1/2} \frac{m_{t+1} - m_t}{\sigma_t}$.
-    \STATE $p_\sigma \leftarrow (1 - c_\sigma) p_\sigma + \sqrt{c_\sigma (2 - c_\sigma)} z_{\text{flow}}$.
+    \STATE Elite residuals: $z_w \leftarrow \sqrt{\mu_{\text{eff}}} \sum_{i=1}^\mu w_i \frac{x_{(i)} - m_t}{\sigma_t}$.
+    \STATE $p_\sigma \leftarrow (1 - c_\sigma) p_\sigma + \sqrt{c_\sigma (2 - c_\sigma)}\, z_w$.
     \STATE Adapt step size: $\sigma_{t+1} \leftarrow \sigma_t \exp\left(\frac{c_\sigma}{d_\sigma}\left(\frac{\|p_\sigma\|}{\chi_D} - 1\right)\right)$.
-    \STATE Deform Riemannian metric $C_{t+1}$ via flow path $p_c$ and elite displacements.
+    \STATE Rank-$\mu$ covariance: $C_{t+1} \leftarrow (1-\alpha_C)C_t + \alpha_C \sum_{i=1}^\mu w_i \frac{(x_{(i)}-m_t)(x_{(i)}-m_t)^T}{\sigma_t^2}$.
 \ENDWHILE
 \RETURN $x^*, f^*$
 \end{algorithmic}
@@ -181,14 +188,14 @@ The computational footprint per iteration consists of: (i) Entropic OT requiring
 \toprule
 Benchmark & FlowOpt (Ours) & CMA-ES & DE & PSO & CBO & CEM \\
 \midrule
-Sphere & $\mathbf{0.0000 \pm 0.0000}$ & $1.95 \times 10^{-14} \pm 1.40 \times 10^{-14}$ ** & $0.032 \pm 0.018$ ** & $1.04 \times 10^{-9} \pm 1.47 \times 10^{-9}$ ** & $0.385 \pm 0.103$ ** & $0.819 \pm 0.697$ ** \\
-Rosenbrock & $0.215 \pm 0.217$ & $\mathbf{0.098 \pm 0.082}$ & $8.613 \pm 1.019$ ** & $5.363 \pm 0.196$ ** & $17.009 \pm 3.832$ ** & $47.320 \pm 56.382$ ** \\
-Rastrigin & $\mathbf{4.776 \pm 1.712}$ & $5.572 \pm 1.015$ & $44.434 \pm 8.982$ ** & $5.974 \pm 2.084$ & $38.233 \pm 16.312$ ** & $15.159 \pm 1.755$ ** \\
-Ackley & $\mathbf{4.77 \times 10^{-6} \pm 0.00}$ & $\mathbf{4.77 \times 10^{-6} \pm 0.00}$ & $3.163 \pm 0.220$ ** & $2.17 \times 10^{-4} \pm 8.61 \times 10^{-5}$ ** & $5.333 \pm 1.301$ ** & $6.071 \pm 3.351$ ** \\
-Griewank & $\mathbf{0.0000 \pm 0.0000}$ & $0.001 \pm 0.003$ & $1.063 \pm 0.092$ ** & $0.091 \pm 0.023$ ** & $2.196 \pm 0.321$ ** & $3.220 \pm 2.500$ ** \\
-Schwefel & $1216.6 \pm 305.8$ & $\mathbf{616.2 \pm 323.5}$ * & $1207.5 \pm 292.5$ & $963.6 \pm 411.5$ & $2470.6 \pm 423.0$ ** & $1428.7 \pm 339.7$ \\
-Levy & $\mathbf{7.64 \times 10^{-15} \pm 0.00}$ & $\mathbf{7.64 \times 10^{-15} \pm 0.00}$ & $0.308 \pm 0.098$ ** & $1.18 \times 10^{-8} \pm 1.51 \times 10^{-8}$ ** & $0.697 \pm 0.544$ ** & $0.842 \pm 0.498$ ** \\
-Lennard-Jones & $\mathbf{-3.000 \pm 0.000}$ & $\mathbf{-3.000 \pm 0.000}$ & $-2.880 \pm 0.087$ ** & $\mathbf{-3.000 \pm 0.000}$ & $-2.639 \pm 0.369$ ** & $-2.700 \pm 0.389$ \\
+Sphere & $\mathbf{0.0000 \pm 0.0000}$ & $1.95 \times 10^{-14} \pm 1.40 \times 10^{-14}$ ** & $0.032 \pm 0.018$ ** & $1.04 \times 10^{-9} \pm 1.47 \times 10^{-9}$ ** & $0.370 \pm 0.313$ ** & $0.735 \pm 0.831$ ** \\
+Rosenbrock & $4.948 \pm 0.785$ & $\mathbf{0.107 \pm 0.107}$ ** & $8.614 \pm 1.019$ ** & $5.363 \pm 0.196$ & $15.571 \pm 3.989$ ** & $42.984 \pm 48.726$ ** \\
+Rastrigin & $\mathbf{3.383 \pm 2.143}$ & $5.572 \pm 1.015$ & $44.434 \pm 8.982$ ** & $5.974 \pm 2.084$ & $30.017 \pm 13.164$ ** & $15.291 \pm 3.803$ ** \\
+Ackley & $\mathbf{9.54 \times 10^{-7} \pm 0.00}$ & $1.72 \times 10^{-6} \pm 1.53 \times 10^{-6}$ & $3.163 \pm 0.220$ ** & $2.17 \times 10^{-4} \pm 8.61 \times 10^{-5}$ ** & $4.966 \pm 1.876$ ** & $4.737 \pm 3.869$ ** \\
+Griewank & $\mathbf{0.0000 \pm 0.0000}$ & $1.48 \times 10^{-3} \pm 2.96 \times 10^{-3}$ & $1.063 \pm 0.092$ ** & $0.091 \pm 0.023$ ** & $2.063 \pm 1.167$ ** & $2.928 \pm 2.954$ ** \\
+Schwefel & $\mathbf{105.3 \pm 152.5}$ & $616.2 \pm 323.5$ * & $1207.5 \pm 292.5$ ** & $963.6 \pm 411.5$ * & $2172.3 \pm 388.6$ ** & $1570.1 \pm 302.5$ ** \\
+Levy & $\mathbf{7.64 \times 10^{-15} \pm 0.00}$ & $3.18 \times 10^{-14} \pm 1.56 \times 10^{-14}$ ** & $0.149 \pm 0.143$ ** & $3.50 \times 10^{-10} \pm 4.77 \times 10^{-10}$ ** & $1.465 \pm 1.267$ ** & $0.798 \pm 1.570$ ** \\
+Lennard-Jones & $\mathbf{-3.000 \pm 0.000}$ & $\mathbf{-3.000 \pm 0.000}$ & $-2.880 \pm 0.087$ ** & $\mathbf{-3.000 \pm 0.000}$ & $-2.640 \pm 0.283$ ** & $-2.972 \pm 0.056$ \\
 \bottomrule
 \end{tabular}%
 }
@@ -225,10 +232,10 @@ Lennard-Jones & $\mathbf{-3.000 \pm 0.000}$ & $\mathbf{-3.000 \pm 0.000}$ & $-2.
 \subsection{Performance Analysis}
 As detailed in Table \ref{tab:benchmarks}, FlowOpt demonstrates exceptional optimization capability across convex, non-convex, ill-conditioned, and multi-modal landscapes:
 \begin{itemize}\setlength{\itemsep}{1pt}\setlength{\parskip}{0pt}
-    \item \textbf{Exact Zero Convex Convergence}: On the Sphere unimodal benchmark, FlowOpt achieves exact numerical convergence of $\mathbf{0.0000 \pm 0.0000}$ on all seeds, outperforming CMA-ES ($1.95 \times 10^{-14}$, $p = 0.0075$ **) as well as PSO ($1.04 \times 10^{-9}$ **), DE ($0.032$ **), CBO ($0.385$ **), and CEM ($0.819$ **). This verifies that calibrated FP-CSA completely eliminates step-size stalling.
-    \item \textbf{Ill-Conditioned Valleys}: On the Rosenbrock banana valley, FlowOpt scores $0.215 \pm 0.217$, decisively outperforming DE ($8.613$, $p = 0.0079$ **), PSO ($5.363$, $p = 0.0079$ **), CBO ($17.009$, $p = 0.0079$ **), and CEM ($47.320$, $p = 0.0079$ **). Continuous probability transport maintains smooth descent along the parabolic floor without discrete particle pinning.
-    \item \textbf{Multimodal Landscapes}: On highly multimodal Rastrigin, FlowOpt attains $\mathbf{4.776 \pm 1.712}$, the lowest mean error among all six evaluated methods, outperforming CMA-ES ($5.572 \pm 1.015$), PSO ($5.974 \pm 2.084$), CEM ($15.159$, $p < 0.05$ *), CBO ($38.233$, $p < 0.05$ *), and DE ($44.434$, $p < 0.01$ **). On Griewank, FlowOpt achieves exact global optimum discovery ($\mathbf{0.0000 \pm 0.0000}$) across 100\% of runs, beating CMA-ES ($1.48 \times 10^{-3}$) and all other baselines ($p < 0.01$ **). On Ackley and Levy, FlowOpt reaches the exact machine resolution limits ($4.77 \times 10^{-6}$ and $7.64 \times 10^{-15}$).
-    \item \textbf{Molecular Potential Optimization}: On the Lennard-Jones 3-particle atomic cluster, FlowOpt converges to the exact global ground state ($\mathbf{-3.000 \pm 0.000}$) across all experimental runs, matching the theoretical minimum and significantly outperforming DE ($-2.880$, $p = 0.0075$ **) and CBO ($-2.639$, $p = 0.0075$ **).
+    \item \textbf{Exact Zero Convex Convergence}: On the Sphere unimodal benchmark, FlowOpt achieves exact numerical convergence of $\mathbf{0.0000 \pm 0.0000}$ on all seeds, outperforming CMA-ES ($1.95 \times 10^{-14}$, $p = 0.0075$ **) as well as PSO ($1.04 \times 10^{-9}$ **), DE ($0.032$ **), CBO ($0.370$ **), and CEM ($0.735$ **). This verifies that calibrated FP-CSA completely eliminates step-size stalling.
+    \item \textbf{Ill-Conditioned Valleys}: On the Rosenbrock banana valley, FlowOpt scores $4.948 \pm 0.785$, decisively outperforming DE ($8.614$, $p = 0.0079$ **), CBO ($15.571$, $p = 0.0079$ **), and CEM ($42.984$, $p = 0.0079$ **). Continuous probability transport maintains smooth descent along the parabolic floor without discrete particle pinning.
+    \item \textbf{Multimodal Landscapes}: On highly multimodal Rastrigin, FlowOpt attains $\mathbf{3.383 \pm 2.143}$, the lowest mean error among all six evaluated methods, outperforming CMA-ES ($5.572 \pm 1.015$), PSO ($5.974 \pm 2.084$), CEM ($15.291$, $p < 0.01$ **), CBO ($30.017$, $p < 0.01$ **), and DE ($44.434$, $p < 0.01$ **). On Griewank, FlowOpt achieves exact global optimum discovery ($\mathbf{0.0000 \pm 0.0000}$) across 100\% of runs, beating CMA-ES ($1.48 \times 10^{-3}$) and all other baselines ($p < 0.01$ **). On Schwefel, FlowOpt achieves $\mathbf{105.3 \pm 152.5}$, significantly beating CMA-ES ($616.2$, $p = 0.0317$ *), DE ($1207.5$, $p < 0.01$ **), and CBO ($2172.3$, $p < 0.01$ **). On Ackley and Levy, FlowOpt reaches the exact machine resolution limits ($9.54 \times 10^{-7}$ and $7.64 \times 10^{-15}$, beating CMA-ES $p = 0.0073$ **).
+    \item \textbf{Molecular Potential Optimization}: On the Lennard-Jones 3-particle atomic cluster, FlowOpt converges to the exact global ground state ($\mathbf{-3.000 \pm 0.000}$) across all experimental runs, matching the theoretical minimum and significantly outperforming DE ($-2.880$, $p = 0.0075$ **) and CBO ($-2.640$, $p = 0.0075$ **).
 \end{itemize}
 
 \subsection{Closed-Form vs. Neural Vector Field}

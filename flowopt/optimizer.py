@@ -72,42 +72,10 @@ def _log_rank_weights(mu: int, device, dtype) -> torch.Tensor:
 
 
 # --------------------------------------------------------------------------- #
-#  Entropic OT -- the FM ingredient                                            #
+#  Entropic OT -- the FM ingredient (canonical implementation lives in ot.py) #
 # --------------------------------------------------------------------------- #
 
-def sinkhorn_coupling(source: torch.Tensor,
-                      target: torch.Tensor,
-                      w_target: torch.Tensor,
-                      reg: float,
-                      max_iter: int = 60) -> torch.Tensor:
-    """Stabilized Sinkhorn-Knopp:  min_{Pi in U(1/N, w)}  <Pi, C> + reg * H(Pi)
-
-    Returns Pi* of shape (len(source), len(target)).  Marginal constraints are
-    enforced via vector log-domain updates; ``1e-30`` floors prevent log(0).
-    """
-    N, _ = source.shape
-    M, _ = target.shape
-
-    # Squared-Euclidean cost via the (a-b)^2 = a^2 + b^2 - 2ab trick.
-    s_sq = (source ** 2).sum(dim=-1, keepdim=True)
-    t_sq = (target ** 2).sum(dim=-1, keepdim=True).t()
-    cost = (s_sq + t_sq - 2.0 * source @ target.t()).clamp_min(0.0)
-    # Median scaling -> reg is meaningful across problem scales.
-    cost = cost / (cost.median() + 1e-12)
-
-    p = torch.full((N,), 1.0 / N, device=source.device, dtype=source.dtype)
-    q = w_target / (w_target.sum() + 1e-12)
-
-    u = torch.zeros(N, device=source.device, dtype=source.dtype)
-    v = torch.zeros(M, device=source.device, dtype=source.dtype)
-    log_p = torch.log(p + 1e-30)
-    log_q = torch.log(q + 1e-30)
-    for _ in range(max_iter):
-        u_new = reg * (log_p - torch.logsumexp((v.unsqueeze(0) - cost) / reg, dim=1))
-        v = reg * (log_q - torch.logsumexp((u_new.unsqueeze(1) - cost) / reg, dim=0))
-        u = u_new
-
-    return torch.exp((u.unsqueeze(1) + v.unsqueeze(0) - cost) / reg)
+from .ot import sinkhorn_coupling  # single implementation; re-exported for back-compat
 
 
 # --------------------------------------------------------------------------- #
@@ -164,13 +132,16 @@ class FlowOpt:
     # ------------------------- housekeeping ----------------------------- #
     def fold(self, x: torch.Tensor) -> torch.Tensor:
         """Smooth periodic reflection: samples always stay in [lb, ub]."""
-        w = self.span
-        s = (x - self.lb) % (2.0 * w)
-        return self.lb + torch.where(s > w, 2.0 * w - s, s)
+        lb = self.lb if x.device == self.lb.device else self.lb.to(x.device)
+        w = self.span if x.device == self.span.device else self.span.to(x.device)
+        s = (x - lb) % (2.0 * w)
+        return lb + torch.where(s > w, 2.0 * w - s, s)
 
     def clamp(self, x: torch.Tensor) -> torch.Tensor:
         """Hard clamp for the mean (m is updated, x is reflected)."""
-        return torch.clamp(x, min=self.lb, max=self.ub)
+        lb = self.lb if x.device == self.lb.device else self.lb.to(x.device)
+        ub = self.ub if x.device == self.ub.device else self.ub.to(x.device)
+        return torch.clamp(x, min=lb, max=ub)
 
     # ------------------------- one FM step ------------------------------ #
     def step(self, f: Callable[[torch.Tensor], torch.Tensor], reg_ot: float
@@ -207,7 +178,12 @@ class FlowOpt:
         # 7) Cumulative Step-Size Adaptation on the elite-mean path
         ar = (elites - m_old) / self.sigma                                            # (mu, D)
         z_w = math.sqrt(self.mu_eff) * (self.w.view(-1, 1) * ar).sum(dim=0)          # (D,)
-        self.p_sigma = (1.0 - self.c_sigma) * self.p_sigma + z_w
+        # Standard CSA path update (Hansen 2001, Eq. 11):
+        #   p_sigma <- (1 - c_sigma) * p_sigma + sqrt(c_sigma*(2-c_sigma)) * z_w
+        # The sqrt factor ensures stationary Var[p_sigma] = I_D under the null
+        # hypothesis (Theorem 3), so E[||p_sigma||] = chi_D exactly.
+        _sqrt_cs = math.sqrt(self.c_sigma * (2.0 - self.c_sigma))
+        self.p_sigma = (1.0 - self.c_sigma) * self.p_sigma + _sqrt_cs * z_w
         exp_arg = (self.c_sigma / self.d_sigma) * (float(self.p_sigma.norm())
                                                   / self.chi_D - 1.0)
         self.sigma = float(self.sigma * math.exp(max(-1.0, min(1.0, exp_arg))))

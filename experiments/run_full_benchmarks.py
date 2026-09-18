@@ -37,7 +37,7 @@ def run_benchmarks(dim=10, max_iters=200, n_runs=5, output_dir="results"):
         Griewank(dim=dim),
         Schwefel(dim=dim),
         Levy(dim=dim),
-        LennardJonesCluster(n_atoms=dim // 3 if dim >= 6 else 4)
+        LennardJonesCluster(n_atoms=max(2, dim // 3))
     ]
     
     optimizers = {
@@ -77,7 +77,7 @@ def run_benchmarks(dim=10, max_iters=200, n_runs=5, output_dir="results"):
                     # subsample history to 100 points
                     hist = res.get("history", [])
                     if len(hist) > 100:
-                        step = len(hist) // 100
+                        step = max(1, len(hist) // 100)  # guard: step=0 raises ValueError
                         hist = hist[::step]
                     histories.append(hist)
                 except Exception as e:

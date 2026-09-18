@@ -2,13 +2,16 @@
 Entropic Optimal Transport --- the single Flow Matching ingredient
 =================================================================
 
-Public entry: ``sinkhorn_coupling(source, target, w_target, reg)``.
+Public entry: ``sinkhorn_coupling(source, target, w_target, reg)``
+
+This module is the **canonical home** of ``sinkhorn_coupling``.
+``optimizer.py`` imports it from here; ``flowopt.__init__`` re-exports it
+for convenience.  There is exactly ONE implementation in the codebase.
 
 Everything else (greedy matching, neural vector field, online MLP training)
 that used to live in this package has been removed. The algorithm does not
 benefit from a "neural" baseline or a "greedy" baseline; both were merely
-side-channel experiments that did not survive scrutiny. The canonical FM
-algorithm only needs the Sinkhorn step implemented in `optimizer.py`.
+side-channel experiments that did not survive scrutiny.
 
 For users that want a one-liner import:
 
@@ -41,6 +44,9 @@ def sinkhorn_coupling(source: torch.Tensor,
     * Update is in the log domain with ``1e-30`` floors, which avoids
       catastrophic underflow under float32.
     """
+    target = target.to(device=source.device, dtype=source.dtype)
+    w_target = w_target.to(device=source.device, dtype=source.dtype)
+
     N, _ = source.shape
     M, _ = target.shape
 
